@@ -347,8 +347,15 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbx6fRDt0k5TwUXqV1XOvTYi
 // ── API helpers ──────────────────────────────────────────
 async function api(params){
   const url=API_URL+'?'+new URLSearchParams(params).toString();
-  const r=await fetch(url);
-  const j=await r.json();
+  // Apps Script requires redirect:follow and no custom headers
+  const r=await fetch(url,{
+    method:'GET',
+    redirect:'follow'
+  });
+  const text=await r.text();
+  let j;
+  try{ j=JSON.parse(text); }
+  catch(e){ throw new Error('Respuesta no válida del servidor: '+text.substring(0,100)); }
   if(!j.ok) throw new Error(j.error||'API error');
   return j.data;
 }
