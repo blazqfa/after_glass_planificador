@@ -206,14 +206,38 @@ textarea.editable{border:1px solid #c8c8c4;border-radius:5px;padding:5px 7px;fon
   </div>
   <div class="stats-bar" id="statsBar"></div>
   <div class="filter-bar">
-    <label>ESTADO:</label>
-    <select onchange="applyFilter('estado',this.value)"><option value="">TODOS</option><option>SOLICITADO</option><option>PENDIENTE</option><option>SERVIDO</option><option>TERMINADO</option></select>
-    <label>ORIGEN:</label>
-    <select onchange="applyFilter('origen',this.value)"><option value="">TODOS</option><option>PARMA</option><option>ABBIATEGRASSO</option><option>AZUQUECA</option><option>TORRILE2</option></select>
-    <label>STOCK O:</label>
-    <select onchange="applyFilter('stock',this.value)"><option value="">TODOS</option><option value="SI">SÍ</option><option value="NO">NO</option></select>
-    <label>YPORTCONS:</label>
-    <select onchange="applyFilter('yport',this.value)"><option value="">TODOS</option><option value="ACTIVO">ACTIVO</option><option value="ELIMINADO">ELIMINADO</option></select>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;width:100%;align-items:center;">
+      <span style="font-size:11px;font-weight:700;color:var(--blue);white-space:nowrap;">🔍 FILTROS:</span>
+      <input id="f_ref"    class="f-input" placeholder="ARTÍCULO"      oninput="applyFilters()" title="Filtrar por artículo">
+      <input id="f_desc"   class="f-input" placeholder="DESCRIPCIÓN"   oninput="applyFilters()" title="Filtrar por descripción">
+      <input id="f_qty"     class="f-input f-sm" placeholder="QTY"          oninput="applyFilters()">
+      <input id="f_qtyConf" class="f-input f-sm" placeholder="QTY CONF." oninput="applyFilters()" title="Filtrar por cantidad confirmada">
+      <input id="f_um"     class="f-input f-sm" placeholder="UM"       oninput="applyFilters()">
+      <input id="f_orden"  class="f-input" placeholder="ORDEN"         oninput="applyFilters()">
+      <input id="f_fEnt"   class="f-input" placeholder="F.ENTREGA SAP" oninput="applyFilters()" title="ej: 2026-06">
+      <input id="f_fConf"  class="f-input" placeholder="F.CONFIRMADA"  oninput="applyFilters()">
+      <select id="f_origen" class="f-sel" onchange="applyFilters()">
+        <option value="">ORIGEN: TODOS</option>
+        <option>PARMA</option><option>ABBIATEGRASSO</option><option>AZUQUECA</option><option>TORRILE2</option>
+      </select>
+      <input id="f_fIni"   class="f-input" placeholder="INICIO PROD."  oninput="applyFilters()">
+      <input id="f_fFin"   class="f-input" placeholder="FIN PROD."     oninput="applyFilters()">
+      <select id="f_estado" class="f-sel" onchange="applyFilters()">
+        <option value="">ESTADO: TODOS</option>
+        <option>SOLICITADO</option><option>PENDIENTE</option><option>SERVIDO</option><option>TERMINADO</option>
+      </select>
+      <input id="f_fRec"   class="f-input" placeholder="F.RECEPCIÓN"   oninput="applyFilters()">
+      <select id="f_yport" class="f-sel" onchange="applyFilters()">
+        <option value="">YPORTCONS: TODOS</option>
+        <option>ACTIVO</option><option>ELIMINADO</option>
+      </select>
+      <select id="f_stock" class="f-sel" onchange="applyFilters()">
+        <option value="">STOCK O: TODOS</option>
+        <option value="SI">SÍ</option><option value="NO">NO</option>
+      </select>
+      <input id="f_notes"  class="f-input" placeholder="NOTAS"         oninput="applyFilters()">
+      <button class="btn outline sm" onclick="clearFilters()" style="font-size:11px;padding:3px 8px;">✕ LIMPIAR</button>
+    </div>
   </div>
   <div class="tbl-wrap">
     <table id="mainTable">
@@ -396,20 +420,32 @@ async function api(params){
 let rows=[];
 let history=[];
 
-let filters={estado:'',origen:'',stock:'',yport:''};
+let filters={};  // now handled by applyFilters()
 let sortField=null,sortDir=1;
 let uid=rows.length?Math.max(...rows.map(r=>r.id))+1:1;
 let openDetail=null,ganttOffset=0,pendingDups=[];
 
 async function save(){
+  _isSaving=true;
+  _lastSaveTime=Date.now();
   try{
     await api({action:'savePlan',rows:JSON.stringify(rows)});
-  } catch(e){ showToast('⚠ Error guardando: '+e.message); }
+    _lastSaveTime=Date.now();
+  } catch(e){
+    showToast('⚠ Error guardando: '+e.message);
+  } finally{
+    _isSaving=false;
+  }
 }
 async function saveHist(){
+  _isSaving=true;
   try{
     await api({action:'saveHist',rows:JSON.stringify(history)});
-  } catch(e){ showToast('⚠ Error guardando histórico: '+e.message); }
+  } catch(e){
+    showToast('⚠ Error guardando histórico: '+e.message);
+  } finally{
+    _isSaving=false;
+  }
 }
 
 // ============ COLUMN ORDER (admin draggable) ============
@@ -418,6 +454,7 @@ const ALL_COLS=[
   {id:'ref',     label:'ARTÍCULO',                   sort:false},
   {id:'desc',    label:'DESCRIPCIÓN',                 sort:false},
   {id:'qty',     label:'QTY',                         sort:false},
+  {id:'qtyConf', label:'QTY CONFIRMADA (PZ)',          sort:false},
   {id:'um',      label:'UM',                          sort:false},
   {id:'orden',   label:'ORDEN',                       sort:false},
   {id:'fEnt',    label:'FECHA ENTREGA SAP',           sort:true},
@@ -448,7 +485,34 @@ function switchTab(t){
   if(t==='gantt')renderGantt();
 }
 
-function applyFilter(k,v){filters[k]=v;renderTable();}
+function applyFilters(){
+  filters={
+    ref:   (document.getElementById('f_ref')   ||{}).value||'',
+    desc:  (document.getElementById('f_desc')  ||{}).value||'',
+    qty:      (document.getElementById('f_qty')     ||{}).value||'',
+    qtyConf:  (document.getElementById('f_qtyConf')||{}).value||'',
+    um:    (document.getElementById('f_um')    ||{}).value||'',
+    orden: (document.getElementById('f_orden') ||{}).value||'',
+    fEnt:  (document.getElementById('f_fEnt')  ||{}).value||'',
+    fConf: (document.getElementById('f_fConf') ||{}).value||'',
+    origen:(document.getElementById('f_origen')||{}).value||'',
+    fIni:  (document.getElementById('f_fIni')  ||{}).value||'',
+    fFin:  (document.getElementById('f_fFin')  ||{}).value||'',
+    estado:(document.getElementById('f_estado')||{}).value||'',
+    fRec:  (document.getElementById('f_fRec')  ||{}).value||'',
+    yport: (document.getElementById('f_yport') ||{}).value||'',
+    stock: (document.getElementById('f_stock') ||{}).value||'',
+    notes: (document.getElementById('f_notes') ||{}).value||''
+  };
+  renderTable();
+}
+function clearFilters(){
+  ['f_ref','f_desc','f_qty','f_qtyConf','f_um','f_orden','f_fEnt','f_fConf',
+   'f_origen','f_fIni','f_fFin','f_estado','f_fRec','f_yport','f_stock','f_notes'
+  ].forEach(id=>{ const el=document.getElementById(id);if(el)el.value=''; });
+  filters={};renderTable();
+}
+function applyFilter(k,v){ applyFilters(); } // legacy compat
 function setSort(f){if(sortField===f)sortDir*=-1;else{sortField=f;sortDir=1;}renderTable();}
 function dateVal(s){if(!s)return '';const d=new Date(s);return isNaN(d)?s:d.toISOString();}
 
@@ -533,7 +597,7 @@ function closeDupModal(){document.getElementById('dupModal').style.display='none
 
 async function addManualRow(){
   if(!canEdit('orden'))return;
-  const newRow={id:uid++,ref:'',desc:'',qty:'',um:'',orden:'',fEnt:'',fConf:'',origen:'',fIni:'',fFin:'',estado:'SOLICITADO',fRec:'',yport:'',stock:'NO',notes:'',qtyChanged:false,qtyNew:''};
+  const newRow={id:uid++,ref:'',desc:'',qty:'',qtyConf:'',um:'',orden:'',fEnt:'',fConf:'',origen:'',fIni:'',fFin:'',estado:'SOLICITADO',fRec:'',yport:'',stock:'NO',notes:'',qtyChanged:false,qtyNew:''};
   rows.push(newRow);
   try{
     await api({action:'addRow',row:JSON.stringify(newRow)});
@@ -585,11 +649,20 @@ function renderTable(){
     return `<th class="${sortCls}" ${sortClick} ${drag}>${handle}${col.label}${sortIco}</th>`;
   }).join('');
 
+  const fk=Object.keys(filters);
   let filtered=rows.filter(r=>{
-    if(filters.estado&&r.estado!==filters.estado)return false;
-    if(filters.origen&&r.origen!==filters.origen)return false;
-    if(filters.stock&&r.stock!==filters.stock)return false;
-    if(filters.yport&&r.yport!==filters.yport)return false;
+    for(const k of fk){
+      const fv=(filters[k]||'').trim().toUpperCase();
+      if(!fv)continue;
+      const rv=String(r[k]||'').toUpperCase();
+      // select fields: exact match; text fields: contains
+      const exactFields=['estado','origen','stock','yport'];
+      if(exactFields.includes(k)){
+        if(rv!==fv)return false;
+      } else {
+        if(!rv.includes(fv))return false;
+      }
+    }
     return true;
   });
   filtered=getSorted(filtered);
@@ -613,6 +686,7 @@ function renderTable(){
         case 'ref':    return `<td class="ref-txt" style="white-space:nowrap">${esc(r.ref)||'—'}</td>`;
         case 'desc':   return `<td class="data-txt" style="max-width:150px">${esc(r.desc)||'—'}</td>`;
         case 'qty':    return `<td class="data-txt" style="text-align:right">${r.qtyChanged?`<span class="badge changed">⚠ ${esc(r.qtyNew)}</span>`:esc(r.qty)}</td>`;
+        case 'qtyConf':return `<td><input class="editable" type="number" min="0" step="0.001" value="${esc(r.qtyConf||'')}" style="width:80px;text-align:right" placeholder="0" ${canEdit('qtyConf')?'':'disabled'} onchange="sf(${r.id},'qtyConf',this.value)"></td>`;
         case 'um':     return `<td class="data-txt">${esc(r.um)||'—'}</td>`;
         case 'orden':  return `<td class="data-txt" style="white-space:nowrap">${esc(r.orden)||'—'}</td>`;
         case 'fEnt':   return `<td class="data-txt" style="white-space:nowrap">${r.fEnt||'—'}</td>`;
@@ -649,6 +723,7 @@ function renderTable(){
           <div><div class="detail-label">ARTÍCULO</div><input class="editable" type="text" value="${esc(r.ref)}" ${canEdit('ref')?'':'disabled'} style="width:100%;text-transform:uppercase" onchange="sf(${r.id},'ref',this.value)"></div>
           <div><div class="detail-label">DESCRIPCIÓN</div><input class="editable" type="text" value="${esc(r.desc)}" ${canEdit('desc')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'desc',this.value)"></div>
           <div><div class="detail-label">QTY</div><input class="editable" type="text" value="${esc(r.qty)}" ${canEdit('qty')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'qty',this.value)"></div>
+          <div><div class="detail-label">QTY CONFIRMADA (PZ)</div><input class="editable" type="number" min="0" step="0.001" value="${esc(r.qtyConf||'')}" ${canEdit('qtyConf')?'':'disabled'} style="width:100%" placeholder="0" onchange="sf(${r.id},'qtyConf',this.value)"></div>
           <div><div class="detail-label">UM</div><input class="editable" type="text" value="${esc(r.um||'')}" ${canEdit('um')?'':'disabled'} style="width:100%;text-transform:uppercase" onchange="sf(${r.id},'um',this.value)"></div>
           <div><div class="detail-label">ORDEN</div><input class="editable" type="text" value="${esc(r.orden)}" ${canEdit('orden')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'orden',this.value)"></div>
           <div><div class="detail-label">FECHA ENTREGA SAP</div><input class="editable" type="date" value="${r.fEnt||''}" ${canEdit('fEnt')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'fEnt',this.value)"></div>
@@ -794,7 +869,7 @@ async function clearHistory(){
   } catch(e){ showToast('⚠ Error: '+e.message); }
 }
 
-function exportCSV(){dlCSV('after_glass_planificacion.csv',['Cód.Material','Descripción','Orden','Posición','Qty','F.Fabricación','F.Confirmada','Origen','Estado','Stock O','Notas'],rows.map(r=>[r.ref,r.desc,r.orden,r.posicion,r.qty,r.fFab,r.fConf,r.origen,r.estado,r.stock,r.notes]));}
+function exportCSV(){dlCSV('after_glass_planificacion.csv',['ARTÍCULO','DESCRIPCIÓN','QTY','QTY CONF.(PZ)','UM','ORDEN','F.ENTREGA SAP','F.CONFIRMADA ENTREGA','PRODUCCIÓN(ORIGEN)','INICIO PROD.','FIN PROD.','ESTADO','F.RECEPCIÓN','YPORTCONS','STOCK O','NOTAS'],rows.map(r=>[r.ref,r.desc,r.qty,r.qtyConf,r.um,r.orden,r.fEnt,r.fConf,r.origen,r.fIni,r.fFin,r.estado,r.fRec,r.yport,r.stock,r.notes]));}
 function exportHistCSV(){dlCSV('after_glass_historico.csv',['Cód.Material','Descripción','Orden','Posición','Qty','F.Fabricación','F.Confirmada','Origen','Estado','Stock O','Notas','Archivado'],history.map(r=>[r.ref,r.desc,r.orden,r.posicion,r.qty,r.fFab,r.fConf,r.origen,r.estado,r.stock,r.notes,r.archivedAt]));}
 function dlCSV(name,cols,data){
   const bom='\uFEFF',r2=[cols,...data].map(r=>r.map(c=>'"'+String(c||'').replace(/"/g,'""')+'"').join(','));
@@ -833,8 +908,9 @@ async function loadData(){
       r.qtyChanged = (r.qtyChanged==='true'||r.qtyChanged===true);
       r.id = Number(r.id) || Date.now();
       // default new fields for old rows
-      if(!r.um)    r.um='';
-      if(!r.fEnt)  r.fEnt='';
+      if(!r.um)      r.um='';
+      if(!r.qtyConf) r.qtyConf='';
+      if(!r.fEnt)    r.fEnt='';
       if(!r.fIni)  r.fIni='';
       if(!r.fFin)  r.fFin='';
       if(!r.fRec)  r.fRec='';
@@ -880,21 +956,31 @@ if(currentUser){
   loadData(); // always fresh from Sheets
 }
 
-// Auto-sync every 90 seconds — all users see latest data
+// Safe auto-sync — only runs when NOT actively saving
+let _isSaving = false;
+let _lastSaveTime = 0;
+
 setInterval(()=>{
-  if(currentUser && document.getElementById('appWrap').style.display!=='none'){
-    api({action:'getPlan'}).then(plan=>{
-      if(!Array.isArray(plan))return;
-      plan.forEach(r=>{
-        r.qtyChanged=(r.qtyChanged==='true'||r.qtyChanged===true);
-        r.id=Number(r.id)||Date.now();
-      });
-      rows=plan;
-      uid=rows.length?Math.max(...rows.map(r=>Number(r.id)))+1:1;
-      renderTable();updateStats();
-    }).catch(()=>{});
-  }
-}, 90000);
+  const now = Date.now();
+  // Don't sync if we saved in the last 15 seconds
+  if(_isSaving || (now - _lastSaveTime) < 15000) return;
+  if(!currentUser || document.getElementById('appWrap').style.display==='none') return;
+  api({action:'getPlan'}).then(plan=>{
+    if(!Array.isArray(plan)||plan.length===0) return;
+    plan.forEach(r=>{
+      r.qtyChanged=(r.qtyChanged==='true'||r.qtyChanged===true);
+      r.id=Number(r.id)||Date.now();
+      if(!r.um)r.um='';if(!r.fEnt)r.fEnt='';if(!r.fIni)r.fIni='';
+      if(!r.fFin)r.fFin='';if(!r.fRec)r.fRec='';if(!r.yport)r.yport='';
+      if(r.estado)r.estado=r.estado.toUpperCase();
+      if(r.stock)r.stock=r.stock.toUpperCase();
+      if(r.origen)r.origen=r.origen.toUpperCase();
+    });
+    rows=plan;
+    uid=rows.length?Math.max(...rows.map(r=>Number(r.id)))+1:1;
+    renderTable();updateStats();
+  }).catch(()=>{});
+}, 120000);
 </script>
 </body>
 </html>
