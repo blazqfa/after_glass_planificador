@@ -92,6 +92,12 @@ select.editable:focus,input.editable:focus{outline:2px solid var(--accent);}
 select.editable:disabled,input.editable:disabled{opacity:.5;cursor:not-allowed;}
 textarea.editable{border:1px solid #c8c8c4;border-radius:5px;padding:5px 7px;font-size:11.5px;background:#f0f0ee;color:#555552;width:100%;min-height:52px;resize:vertical;}
 /* BADGES */
+.f-input{border:1px solid #c8d8ed;border-radius:4px;padding:2px 5px;font-size:11px;background:#fff;color:#555552;width:100%;box-sizing:border-box;}
+.f-input:focus{outline:none;border-color:#1a4f8a;background:#f0f5fc;}
+.f-sel{border:1px solid #c8d8ed;border-radius:4px;padding:2px 4px;font-size:11px;background:#fff;color:#555552;width:100%;cursor:pointer;box-sizing:border-box;}
+.f-sel:focus{outline:none;border-color:#1a4f8a;}
+thead tr.filter-row{background:#eef4fc;}
+thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-align:middle;font-weight:normal;}
 .badge{display:inline-block;padding:2px 7px;border-radius:8px;font-size:11px;font-weight:500;}
 .badge.solicitado{background:#e8eef7;color:#1a4f8a;}
 .badge.pendiente{background:#fdf0d8;color:#8a5200;}
@@ -203,42 +209,10 @@ textarea.editable{border:1px solid #c8c8c4;border-radius:5px;padding:5px 7px;fon
     <button class="btn sm" id="btnCSV" onclick="exportCSV()">↓ Descargar CSV</button>
     <button class="btn outline sm" id="btnArchivarTodo" onclick="archiveAll()">Archivar todo</button>
     <button class="btn outline sm" onclick="reloadData()" title="Recargar datos desde Google Sheets" style="color:#1a4f8a;border-color:#1a4f8a;">⟳ Sincronizar</button>
+    <button class="btn outline sm" onclick="clearFilters()" style="color:#c8007a;border-color:#c8007a;" title="Limpiar todos los filtros">✕ LIMPIAR FILTROS</button>
   </div>
   <div class="stats-bar" id="statsBar"></div>
-  <div class="filter-bar">
-    <div style="display:flex;flex-wrap:wrap;gap:6px;width:100%;align-items:center;">
-      <span style="font-size:11px;font-weight:700;color:var(--blue);white-space:nowrap;">🔍 FILTROS:</span>
-      <input id="f_ref"    class="f-input" placeholder="ARTÍCULO"      oninput="applyFilters()" title="Filtrar por artículo">
-      <input id="f_desc"   class="f-input" placeholder="DESCRIPCIÓN"   oninput="applyFilters()" title="Filtrar por descripción">
-      <input id="f_qty"     class="f-input f-sm" placeholder="QTY"          oninput="applyFilters()">
-      <input id="f_qtyConf" class="f-input f-sm" placeholder="QTY CONF." oninput="applyFilters()" title="Filtrar por cantidad confirmada">
-      <input id="f_um"     class="f-input f-sm" placeholder="UM"       oninput="applyFilters()">
-      <input id="f_orden"  class="f-input" placeholder="ORDEN"         oninput="applyFilters()">
-      <input id="f_fEnt"   class="f-input" placeholder="F.ENTREGA SAP" oninput="applyFilters()" title="ej: 2026-06">
-      <input id="f_fConf"  class="f-input" placeholder="F.CONFIRMADA"  oninput="applyFilters()">
-      <select id="f_origen" class="f-sel" onchange="applyFilters()">
-        <option value="">ORIGEN: TODOS</option>
-        <option>PARMA</option><option>ABBIATEGRASSO</option><option>AZUQUECA</option><option>TORRILE2</option>
-      </select>
-      <input id="f_fIni"   class="f-input" placeholder="INICIO PROD."  oninput="applyFilters()">
-      <input id="f_fFin"   class="f-input" placeholder="FIN PROD."     oninput="applyFilters()">
-      <select id="f_estado" class="f-sel" onchange="applyFilters()">
-        <option value="">ESTADO: TODOS</option>
-        <option>SOLICITADO</option><option>PENDIENTE</option><option>SERVIDO</option><option>TERMINADO</option>
-      </select>
-      <input id="f_fRec"   class="f-input" placeholder="F.RECEPCIÓN"   oninput="applyFilters()">
-      <select id="f_yport" class="f-sel" onchange="applyFilters()">
-        <option value="">YPORTCONS: TODOS</option>
-        <option>ACTIVO</option><option>ELIMINADO</option>
-      </select>
-      <select id="f_stock" class="f-sel" onchange="applyFilters()">
-        <option value="">STOCK O: TODOS</option>
-        <option value="SI">SÍ</option><option value="NO">NO</option>
-      </select>
-      <input id="f_notes"  class="f-input" placeholder="NOTAS"         oninput="applyFilters()">
-      <button class="btn outline sm" onclick="clearFilters()" style="font-size:11px;padding:3px 8px;">✕ LIMPIAR</button>
-    </div>
-  </div>
+  
   <div class="tbl-wrap">
     <table id="mainTable">
       <thead><tr id="colHeaderRow"></tr></thead>
@@ -486,30 +460,16 @@ function switchTab(t){
 }
 
 function applyFilters(){
-  filters={
-    ref:   (document.getElementById('f_ref')   ||{}).value||'',
-    desc:  (document.getElementById('f_desc')  ||{}).value||'',
-    qty:      (document.getElementById('f_qty')     ||{}).value||'',
-    qtyConf:  (document.getElementById('f_qtyConf')||{}).value||'',
-    um:    (document.getElementById('f_um')    ||{}).value||'',
-    orden: (document.getElementById('f_orden') ||{}).value||'',
-    fEnt:  (document.getElementById('f_fEnt')  ||{}).value||'',
-    fConf: (document.getElementById('f_fConf') ||{}).value||'',
-    origen:(document.getElementById('f_origen')||{}).value||'',
-    fIni:  (document.getElementById('f_fIni')  ||{}).value||'',
-    fFin:  (document.getElementById('f_fFin')  ||{}).value||'',
-    estado:(document.getElementById('f_estado')||{}).value||'',
-    fRec:  (document.getElementById('f_fRec')  ||{}).value||'',
-    yport: (document.getElementById('f_yport') ||{}).value||'',
-    stock: (document.getElementById('f_stock') ||{}).value||'',
-    notes: (document.getElementById('f_notes') ||{}).value||''
-  };
+  filters={};
+  document.querySelectorAll('#filterRow .f-input, #filterRow .f-sel').forEach(el=>{
+    const key=el.id.replace('f_','');
+    if(el.value) filters[key]=el.value;
+  });
   renderTable();
 }
+
 function clearFilters(){
-  ['f_ref','f_desc','f_qty','f_qtyConf','f_um','f_orden','f_fEnt','f_fConf',
-   'f_origen','f_fIni','f_fFin','f_estado','f_fRec','f_yport','f_stock','f_notes'
-  ].forEach(id=>{ const el=document.getElementById(id);if(el)el.value=''; });
+  document.querySelectorAll('#filterRow .f-input, #filterRow .f-sel').forEach(el=>{ el.value=''; });
   filters={};renderTable();
 }
 function applyFilter(k,v){ applyFilters(); } // legacy compat
@@ -640,14 +600,36 @@ function renderTable(){
   const isAdmin=currentUser?.role==='admin';
 
   // Build header
-  hrow.innerHTML=cols.map((col,ci)=>{
-    const sortCls=col.sort?'sortable':'';
-    const sortIco=col.sort?`<span class="sort-icon">${sortField===col.id?(sortDir===1?'↑':'↓'):'↕'}</span>`:'';
-    const sortClick=col.sort?`onclick="setSort('${col.id}')"` :'';
-    const drag=isAdmin?`draggable="true" ondragstart="onDragStart(event,${ci})" ondragover="onDragOver(event,${ci})" ondrop="onDrop(event,${ci})" ondragend="onDragEnd()"` :'';
-    const handle=isAdmin?`<span class="drag-handle" title="Arrastra para reordenar">⠿</span>`:'';
-    return `<th class="${sortCls}" ${sortClick} ${drag}>${handle}${col.label}${sortIco}</th>`;
-  }).join('');
+      // ── Label row ───────────────────────────────────────────
+    hrow.innerHTML=cols.map(col=>{
+      const sortCls=col.sort?'sortable':'';
+      const sortIco=col.sort?`<span class="sort-icon">${sortField===col.id?(sortDir===1?'↑':'↓'):'↕'}</span>`:'';
+      const sortClick=col.sort?`onclick="setSort('${col.id}')"` :'';
+      return `<th class="${sortCls}" ${sortClick}>${col.label}${sortIco}</th>`;
+    }).join('');
+
+    // ── Filter row — inline under each column header ─────
+    const SEL_OPTS={
+      origen:['','PARMA','ABBIATEGRASSO','AZUQUECA','TORRILE2'],
+      estado:['','SOLICITADO','PENDIENTE','SERVIDO','TERMINADO'],
+      yport: ['','ACTIVO','ELIMINADO'],
+      stock: ['','SI','NO']
+    };
+    const NO_FILTER_COLS=['acciones'];
+    const existFR=document.getElementById('filterRow');
+    if(existFR)existFR.remove();
+    const frow=document.createElement('tr');
+    frow.id='filterRow';
+    frow.className='filter-row';
+    frow.innerHTML=cols.map(col=>{
+      if(NO_FILTER_COLS.includes(col.id))return '<th></th>';
+      if(SEL_OPTS[col.id]){
+        const opts=SEL_OPTS[col.id].map(v=>`<option value="${v}"${(filters[col.id]||'')===(v)?' selected':''}>${v||'▼ TODOS'}</option>`).join('');
+        return `<th><select class="f-sel" id="f_${col.id}" onchange="applyFilters()">${opts}</select></th>`;
+      }
+      return `<th><input class="f-input" id="f_${col.id}" value="${filters[col.id]||''}" placeholder="🔍" oninput="applyFilters()"></th>`;
+    }).join('');
+    hrow.parentElement.insertBefore(frow, hrow.nextSibling);
 
   const fk=Object.keys(filters);
   let filtered=rows.filter(r=>{
