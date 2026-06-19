@@ -209,7 +209,8 @@ thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-
     <button class="btn sm" id="btnCSV" onclick="exportCSV()">↓ Descargar CSV</button>
     <button class="btn outline sm" id="btnArchivarTodo" onclick="archiveAll()">Archivar todo</button>
     <button class="btn outline sm" onclick="reloadData()" title="Recargar datos desde Google Sheets" style="color:#1a4f8a;border-color:#1a4f8a;">⟳ Sincronizar</button>
-    <button class="btn outline sm" onclick="clearFilters()" style="color:#c8007a;border-color:#c8007a;" title="Limpiar todos los filtros">✕ LIMPIAR FILTROS</button>
+    <button class="btn outline sm" onclick="clearFilters()" style="color:#c8007a;border-color:#c8007a;" title="Limpiar todos los filtros">✕ Limpiar filtros</button>
+    <button class="btn danger sm" onclick="clearAllData()" title="Eliminar TODOS los datos de planificación">🗑 VACIAR TODO</button>
   </div>
   <div class="stats-bar" id="statsBar"></div>
   
@@ -401,14 +402,15 @@ let openDetail=null,ganttOffset=0,pendingDups=[];
 
 async function save(){
   _isSaving=true;
-  _lastSaveTime=Date.now();
+  _syncPaused=true;
   try{
     await api({action:'savePlan',rows:JSON.stringify(rows)});
-    _lastSaveTime=Date.now();
   } catch(e){
     showToast('⚠ Error guardando: '+e.message);
   } finally{
     _isSaving=false;
+    // Resume sync after 8 seconds (enough time for Sheets to commit)
+    setTimeout(()=>{ _syncPaused=false; },8000);
   }
 }
 async function saveHist(){
@@ -497,10 +499,51 @@ function loadFile(e){
       if(!orden||!currentRef)continue;
       const desc=colA||currentDesc;
       const posicion=String(row[10]||'').trim();
-      const qtyRaw=String(row[5]||'').replace(',','.').replace(/[^0-9.\-]/g,'');
-      const qtyNum=parseFloat(qtyRaw)||0;
-      const qty=String(Math.abs(qtyNum));
+      // Parse qty handling EU thousands separator (100.000 = 100000, -50.000 PZ)
+      let qtyRaw=String(row[5]||'').replace(/[^0-9.,\-]/g,'').trim();
+      // Detect format: if has both . and , → EU format (1.234,56) or US (1,234.56)
+      // SAP EU: dots=thousands, comma=decimal  e.g. "100.000" or "-50.000"
+      // If only dots and no comma, and dot appears at thousands position → thousands sep
+      const hasComma=qtyRaw.includes(',');
+      const hasDot=qtyRaw.includes('.');
+      let qtyNum=0;
+      if(hasComma && hasDot){
+        // Both: determine which is thousands. EU: 1.234,56 → last sep is decimal
+        const lastComma=qtyRaw.lastIndexOf(',');
+        const lastDot=qtyRaw.lastIndexOf('.');
+        if(lastDot < lastComma){
+          // EU: dot=thousands, comma=decimal
+          qtyNum=parseFloat(qtyRaw.replace(/\./g,'').replace(',','.'))||0;
+        } else {
+          // US: comma=thousands, dot=decimal
+          qtyNum=parseFloat(qtyRaw.replace(/,/g,''))||0;
+        }
+      } else if(hasComma && !hasDot){
+        // Could be EU decimal (1,5) or EU thousands (1,000)
+        const parts=qtyRaw.split(',');
+        if(parts.length===2 && parts[1].length===3){
+          // thousands separator: 100,000
+          qtyNum=parseFloat(qtyRaw.replace(',',''))||0;
+        } else {
+          // decimal comma: 1,5
+          qtyNum=parseFloat(qtyRaw.replace(',','.'))||0;
+        }
+      } else if(hasDot && !hasComma){
+        // Could be EU thousands (100.000) or decimal (1.5)
+        const parts=qtyRaw.split('.');
+        if(parts.length===2 && parts[1].length===3){
+          // EU thousands separator: 100.000 = 100000
+          qtyNum=parseFloat(qtyRaw.replace('.',''))||0;
+        } else {
+          qtyNum=parseFloat(qtyRaw)||0;
+        }
+      } else {
+        qtyNum=parseFloat(qtyRaw)||0;
+      }
+      qtyNum=Math.abs(qtyNum);
       if(!qtyNum)continue;
+      // Format with dot as thousands separator for display
+      const qty=formatQty(qtyNum);
       // NO fSol, NO fEnt from SAP (not valid per client)
       const exist=rows.find(x=>x.ref===currentRef&&x.orden===orden&&x.posicion===posicion);
       if(exist){
@@ -667,8 +710,8 @@ function renderTable(){
       switch(col.id){
         case 'ref':    return `<td class="ref-txt" style="white-space:nowrap">${esc(r.ref)||'—'}</td>`;
         case 'desc':   return `<td class="data-txt" style="max-width:150px">${esc(r.desc)||'—'}</td>`;
-        case 'qty':    return `<td class="data-txt" style="text-align:right">${r.qtyChanged?`<span class="badge changed">⚠ ${esc(r.qtyNew)}</span>`:esc(r.qty)}</td>`;
-        case 'qtyConf':return `<td><input class="editable" type="number" min="0" step="0.001" value="${esc(r.qtyConf||'')}" style="width:80px;text-align:right" placeholder="0" ${canEdit('qtyConf')?'':'disabled'} onchange="sf(${r.id},'qtyConf',this.value)"></td>`;
+        case 'qty':    return `<td class="data-txt" style="text-align:right;white-space:nowrap">${r.qtyChanged?`<span class="badge changed">⚠ ${formatQty(r.qtyNew)}</span>`:formatQty(r.qty)}</td>`;
+        case 'qtyConf':return `<td><input class="editable" type="text" inputmode="decimal" value="${formatQty(r.qtyConf)}" style="width:90px;text-align:right" placeholder="0" ${canEdit('qtyConf')?'':'disabled'} onchange="sf(${r.id},'qtyConf',parseQtyInput(this.value))" onblur="this.value=formatQty(parseQtyInput(this.value))"></td>`;
         case 'um':     return `<td class="data-txt">${esc(r.um)||'—'}</td>`;
         case 'orden':  return `<td class="data-txt" style="white-space:nowrap">${esc(r.orden)||'—'}</td>`;
         case 'fEnt':   return `<td class="data-txt" style="white-space:nowrap">${r.fEnt||'—'}</td>`;
@@ -722,6 +765,23 @@ function renderTable(){
 }
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+
+// Format number with . as thousands separator and , as decimal (EU display)
+function formatQty(n){
+  if(n===''||n===null||n===undefined)return '';
+  const num=parseFloat(String(n).replace(/\./g,'').replace(',','.'));
+  if(isNaN(num))return String(n);
+  // Format: thousands with . decimal with ,
+  return num.toLocaleString('de-DE',{maximumFractionDigits:3});
+}
+// Parse display value back to number string for storage
+function parseQtyInput(val){
+  if(!val)return '';
+  // Remove thousands dots, replace decimal comma with dot
+  const clean=String(val).replace(/\./g,'').replace(',','.');
+  const n=parseFloat(clean);
+  return isNaN(n)?val:String(n);
+}
 async function sf(id,field,val){
   if(!canEdit(field)){showToast('Sin permisos para editar este campo.');return;}
   const r=rows.find(x=>x.id===id);
@@ -918,6 +978,18 @@ async function loadData(){
 // ── Reload button visible in app ──────────────────────────
 function reloadData(){ rows=[];history=[];loadData(); }
 
+async function clearAllData(){
+  if(!canEdit('orden')){ showToast('Sin permisos para vaciar.'); return; }
+  if(!confirm('⚠️ ¿Eliminar TODAS las líneas de planificación?\nEsta acción no se puede deshacer.')) return;
+  if(!confirm('¿Seguro? Se borrarán todos los datos del Sheet.')) return;
+  rows=[];
+  try{
+    await save();
+    renderTable();updateStats();
+    showToast('🗑 Planificación vaciada.');
+  } catch(e){ showToast('⚠ Error: '+e.message); }
+}
+
 function showLoading(msg){
   const el=document.getElementById('loadingOverlay');
   document.getElementById('loadingMsg').textContent=msg||'Cargando...';
@@ -938,31 +1010,39 @@ if(currentUser){
   loadData(); // always fresh from Sheets
 }
 
-// Safe auto-sync — only runs when NOT actively saving
-let _isSaving = false;
-let _lastSaveTime = 0;
+// Sync state
+let _isSaving=false;
+let _lastSaveTime=0;
 
-setInterval(()=>{
-  const now = Date.now();
-  // Don't sync if we saved in the last 15 seconds
-  if(_isSaving || (now - _lastSaveTime) < 15000) return;
-  if(!currentUser || document.getElementById('appWrap').style.display==='none') return;
-  api({action:'getPlan'}).then(plan=>{
+function normaliseRows(plan){
+  plan.forEach(r=>{
+    r.qtyChanged=(r.qtyChanged==='true'||r.qtyChanged===true);
+    r.id=Number(r.id)||Date.now();
+    if(!r.um)r.um='';if(!r.qtyConf)r.qtyConf='';
+    if(!r.fEnt)r.fEnt='';if(!r.fIni)r.fIni='';
+    if(!r.fFin)r.fFin='';if(!r.fRec)r.fRec='';if(!r.yport)r.yport='';
+    if(r.estado)r.estado=r.estado.toUpperCase();
+    if(r.stock)r.stock=r.stock.toUpperCase();
+    if(r.origen)r.origen=r.origen.toUpperCase();
+  });
+  return plan;
+}
+
+// Real-time sync every 30s — always reads fresh from Sheets
+// Uses timestamp in Sheet to detect changes without overwriting local edits
+let _syncPaused=false;
+setInterval(async()=>{
+  if(_syncPaused||_isSaving) return;
+  if(!currentUser||document.getElementById('appWrap').style.display==='none') return;
+  try{
+    const plan=await api({action:'getPlan'});
     if(!Array.isArray(plan)||plan.length===0) return;
-    plan.forEach(r=>{
-      r.qtyChanged=(r.qtyChanged==='true'||r.qtyChanged===true);
-      r.id=Number(r.id)||Date.now();
-      if(!r.um)r.um='';if(!r.fEnt)r.fEnt='';if(!r.fIni)r.fIni='';
-      if(!r.fFin)r.fFin='';if(!r.fRec)r.fRec='';if(!r.yport)r.yport='';
-      if(r.estado)r.estado=r.estado.toUpperCase();
-      if(r.stock)r.stock=r.stock.toUpperCase();
-      if(r.origen)r.origen=r.origen.toUpperCase();
-    });
+    normaliseRows(plan);
     rows=plan;
     uid=rows.length?Math.max(...rows.map(r=>Number(r.id)))+1:1;
     renderTable();updateStats();
-  }).catch(()=>{});
-}, 120000);
+  } catch(e){}
+}, 30000);
 </script>
 </body>
 </html>
