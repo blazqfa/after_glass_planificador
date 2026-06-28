@@ -195,6 +195,7 @@ thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-
     <button class="tab-btn active" id="tabPlan" onclick="switchTab('planificacion')">Planificación</button>
     <button class="tab-btn" id="tabGantt" onclick="switchTab('gantt')">Programación</button>
     <button class="tab-btn" id="tabHist" onclick="switchTab('historico')">Histórico</button>
+    <button class="tab-btn" id="tabConfig" onclick="switchTab('config')" style="border-color:#8c8c8c;color:#8c8c8c;">⚙ Config</button>
     <div class="user-badge"><span>👤</span><b id="userLabel"></b></div>
     <button class="btn-logout" onclick="doLogout()">Salir</button>
   </div>
@@ -202,15 +203,25 @@ thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-
 
 <!-- PLANIFICACIÓN -->
 <div id="tab-planificacion" class="section active">
-  <div class="toolbar">
-    <label for="xlsFile">Excel SAP:</label>
-    <input type="file" id="xlsFile" accept=".xlsx,.xls,.csv" onchange="loadFile(event)" style="font-size:11.5px;">
-    <button class="btn outline sm" id="btnNueva" onclick="addManualRow()">+ Nueva línea</button>
-    <button class="btn sm" id="btnCSV" onclick="exportCSV()">↓ Descargar CSV</button>
-    <button class="btn outline sm" id="btnArchivarTodo" onclick="archiveAll()">Archivar todo</button>
-    <button class="btn outline sm" onclick="reloadData()" title="Recargar datos desde Google Sheets" style="color:#1a4f8a;border-color:#1a4f8a;">⟳ Sincronizar</button>
-    <button class="btn outline sm" onclick="clearFilters()" style="color:#c8007a;border-color:#c8007a;" title="Limpiar todos los filtros">✕ Limpiar filtros</button>
-    <button class="btn danger sm" onclick="clearAllData()" title="Eliminar TODOS los datos de planificación">🗑 VACIAR TODO</button>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px;align-items:center;">
+    <label for="xlsFile" style="font-size:12px;font-weight:600;color:var(--blue);">Excel SAP:</label>
+    <input type="file" id="xlsFile" accept=".xlsx,.xls,.csv" onchange="loadFile(event)" style="font-size:12px;">
+    <div class="action-wrap" id="mainMenuWrap">
+      <button class="action-btn" onclick="toggleMenu('mainMenu',event)" style="font-size:13px;padding:5px 14px;">
+        ☰ MENÚ ▾
+      </button>
+      <div class="action-menu" id="mainMenu">
+        <button id="btnNueva" onclick="closeMenus();addManualRow()">✚ Nueva línea</button>
+        <button id="btnCSV" onclick="closeMenus();exportCSV()">↓ Descargar CSV</button>
+        <button id="btnArchivarTodo" onclick="closeMenus();archiveAll()">📦 Archivar todo</button>
+        <div class="menu-sep"></div>
+        <button onclick="closeMenus();reloadData()" style="color:#1a4f8a;">⟳ Sincronizar datos</button>
+        <button onclick="closeMenus();clearFilters()" style="color:#c8007a;">✕ Limpiar filtros</button>
+        <button onclick="closeMenus();switchTab('config')" style="color:#1a4f8a;">⚙ Configuración</button>
+        <div class="menu-sep"></div>
+        <button class="danger" onclick="closeMenus();clearAllData()">🗑 VACIAR TODO</button>
+      </div>
+    </div>
   </div>
   <div class="stats-bar" id="statsBar"></div>
   
@@ -265,6 +276,13 @@ thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-
   </div>
   <div id="histEmpty" class="empty-state"><p>El histórico está vacío.</p></div>
 </div>
+<!-- CONFIG -->
+<div id="tab-config" class="section">
+  <h2 style="color:var(--blue);margin-bottom:14px;font-size:16px;">⚙ Configuración de columnas desplegables</h2>
+  <p style="font-size:12.5px;color:#666;margin-bottom:16px;">Gestiona los valores disponibles en los campos marcados en verde (listas desplegables). Añade o elimina opciones según tus necesidades.</p>
+  <div id="configPanels" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;"></div>
+</div>
+
 </div><!-- /appWrap -->
 
 <!-- MODAL DUPLICADOS -->
@@ -401,6 +419,11 @@ let uid=rows.length?Math.max(...rows.map(r=>r.id))+1:1;
 let openDetail=null,ganttOffset=0,pendingDups=[];
 
 async function save(){
+  // GUARD: never overwrite Sheet with empty data unless explicitly cleared
+  if(rows.length===0 && !_allowEmptySave){
+    console.warn('save() blocked: rows is empty and _allowEmptySave is false');
+    return;
+  }
   _isSaving=true;
   _syncPaused=true;
   try{
@@ -409,7 +432,6 @@ async function save(){
     showToast('⚠ Error guardando: '+e.message);
   } finally{
     _isSaving=false;
-    // Resume sync after 8 seconds (enough time for Sheets to commit)
     setTimeout(()=>{ _syncPaused=false; },8000);
   }
 }
@@ -442,6 +464,7 @@ const ALL_COLS=[
   {id:'fRec',    label:'FECHA RECEPCIÓN',              sort:true},
   {id:'yport',   label:'YPORTCONS',                    sort:false},
   {id:'stock',   label:'STOCK O',                      sort:false},
+  {id:'ubicacion',label:'UBICACIÓN',                   sort:false},
   {id:'notes',   label:'NOTAS',                        sort:false},
   {id:'acciones',label:'ACCIONES',                     sort:false}
 ];
@@ -453,12 +476,13 @@ function getOrderedCols(){return colOrder.map(id=>ALL_COLS.find(c=>c.id===id)).f
 // ============ TAB SWITCH ============
 function switchTab(t){
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
-  ['tabPlan','tabGantt','tabHist'].forEach(id=>{const el=document.getElementById(id);if(el)el.classList.remove('active');});
-  document.getElementById('tab-'+t).classList.add('active');
-  const map={planificacion:'tabPlan',gantt:'tabGantt',historico:'tabHist'};
+  ['tabPlan','tabGantt','tabHist','tabConfig'].forEach(id=>{const el=document.getElementById(id);if(el)el.classList.remove('active');});
+  const sec=document.getElementById('tab-'+t);if(sec)sec.classList.add('active');
+  const map={planificacion:'tabPlan',gantt:'tabGantt',historico:'tabHist',config:'tabConfig'};
   const el=document.getElementById(map[t]);if(el)el.classList.add('active');
   if(t==='historico')renderHistory();
   if(t==='gantt')renderGantt();
+  if(t==='config')renderConfig();
 }
 
 function applyFilters(){
@@ -600,7 +624,7 @@ function closeDupModal(){document.getElementById('dupModal').style.display='none
 
 async function addManualRow(){
   if(!canEdit('orden'))return;
-  const newRow={id:uid++,ref:'',desc:'',qty:'',qtyConf:'',um:'',orden:'',fEnt:'',fConf:'',origen:'',fIni:'',fFin:'',estado:'SOLICITADO',fRec:'',yport:'',stock:'NO',notes:'',qtyChanged:false,qtyNew:''};
+  const newRow={id:uid++,ref:'',desc:'',qty:'',qtyConf:'',um:'',orden:'',fEnt:'',fConf:'',origen:'',fIni:'',fFin:'',estado:'SOLICITADO',fRec:'',yport:'',stock:'NO',ubicacion:'',notes:'',qtyChanged:false,qtyNew:''};
   rows.push(newRow);
   try{
     await api({action:'addRow',row:JSON.stringify(newRow)});
@@ -674,6 +698,17 @@ function renderTable(){
     }).join('');
     hrow.parentElement.insertBefore(frow, hrow.nextSibling);
 
+    // Populate filter dropdowns from configLists
+    const filterSelMap={f_origen:'origen',f_estado:'estado',f_yport:'yport',f_stock:'stock'};
+    Object.entries(filterSelMap).forEach(([selId,key])=>{
+      const sel=document.getElementById(selId);
+      if(!sel)return;
+      const cur=filters[key]||'';
+      const label={origen:'ORIGEN: TODOS',estado:'ESTADO: TODOS',yport:'YPORTCONS: TODOS',stock:'STOCK O: TODOS'};
+      sel.innerHTML=`<option value="">${label[key]||'TODOS'}</option>`+
+        getListOptions(key).map(v=>`<option value="${v}"${cur===v?' selected':''}>${v}</option>`).join('');
+    });
+
   const fk=Object.keys(filters);
   let filtered=rows.filter(r=>{
     for(const k of fk){
@@ -723,6 +758,7 @@ function renderTable(){
         case 'fRec':   return `<td><input class="editable" type="date" value="${r.fRec||''}" style="min-width:110px" ${ed('fRec')} onchange="sf(${r.id},'fRec',this.value)"></td>`;
         case 'yport':  return `<td><select class="editable" style="text-transform:uppercase" ${ed('yport')} onchange="sf(${r.id},'yport',this.value)">${yports.map(y=>`<option value="${y}"${r.yport===y?' selected':''}>${y||'—'}</option>`).join('')}</select></td>`;
         case 'stock':  return `<td><select class="editable" style="width:60px;text-transform:uppercase" ${ed('stock')} onchange="sf(${r.id},'stock',this.value)"><option value="NO"${r.stock==='NO'?' selected':''}>NO</option><option value="SI"${r.stock==='SI'?' selected':''}>SÍ</option></select></td>`;
+        case 'ubicacion': return `<td><input class="editable" type="text" value="${esc(r.ubicacion||'')}" style="min-width:100px" ${ed('ubicacion')} onchange="sf(${r.id},'ubicacion',this.value)" placeholder="Ubicación..."></td>`;
         case 'notes':  return `<td><input class="editable" type="text" value="${esc(r.notes||'')}" style="min-width:120px" ${ed('notes')} onchange="sf(${r.id},'notes',this.value)" placeholder="Notas..."></td>`;
         case 'acciones': return `<td style="padding:4px 7px;text-align:center">
           <div class="action-wrap" id="aw_${r.id}">
@@ -756,6 +792,7 @@ function renderTable(){
           <div><div class="detail-label">INICIO PRODUCCIÓN</div><input class="editable" type="date" value="${r.fIni||''}" ${canEdit('fIni')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'fIni',this.value)"></div>
           <div><div class="detail-label">FIN PRODUCCIÓN</div><input class="editable" type="date" value="${r.fFin||''}" ${canEdit('fFin')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'fFin',this.value)"></div>
           <div><div class="detail-label">FECHA RECEPCIÓN</div><input class="editable" type="date" value="${r.fRec||''}" ${canEdit('fRec')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'fRec',this.value)"></div>
+          <div><div class="detail-label">UBICACIÓN</div><input class="editable" type="text" value="${esc(r.ubicacion||'')}" ${canEdit('ubicacion')?'':'disabled'} style="width:100%" onchange="sf(${r.id},'ubicacion',this.value)" placeholder="Ubicación..."></div>
           <div style="grid-column:1/-1"><div class="detail-label">NOTAS</div><textarea class="editable" ${canEdit('notes')?'':'disabled'} onchange="sf(${r.id},'notes',this.value)">${esc(r.notes||'')}</textarea></div>
         </div>
       </td></tr>`;
@@ -822,7 +859,9 @@ async function archiveAll(){
   history=[...archived,...history];
   rows=[];openDetail=null;
   try{
-    await Promise.all([save(),saveHist()]);
+    _allowEmptySave=true;
+  await Promise.all([save(),saveHist()]);
+  _allowEmptySave=false;
     renderTable();showToast('📦 Todo archivado');
   } catch(e){ showToast('⚠ Error: '+e.message); }
 }
@@ -978,16 +1017,81 @@ async function loadData(){
 // ── Reload button visible in app ──────────────────────────
 function reloadData(){ rows=[];history=[];loadData(); }
 
+// ════════ CONFIGURABLE DROPDOWN LISTS ════════
+const DEFAULT_LISTS={
+  origen: ['PARMA','ABBIATEGRASSO','AZUQUECA','TORRILE2'],
+  estado: ['SOLICITADO','PENDIENTE','SERVIDO','TERMINADO'],
+  yport:  ['ACTIVO','ELIMINADO'],
+  stock:  ['SI','NO']
+};
+const LIST_LABELS={
+  origen:'PRODUCCIÓN (ORIGEN)',
+  estado:'ESTADO',
+  yport:'YPORTCONS',
+  stock:'STOCK O'
+};
+let configLists=JSON.parse(localStorage.getItem('ag_configLists')||'null')||JSON.parse(JSON.stringify(DEFAULT_LISTS));
+
+function saveConfigLists(){ localStorage.setItem('ag_configLists',JSON.stringify(configLists)); }
+
+function getListOptions(key){ return configLists[key]||DEFAULT_LISTS[key]||[]; }
+
+function renderConfig(){
+  const panel=document.getElementById('configPanels');
+  if(!panel)return;
+  panel.innerHTML=Object.keys(configLists).map(key=>`
+    <div style="background:#fff;border:1px solid #c8d8ed;border-radius:10px;padding:16px;">
+      <div style="font-weight:700;color:var(--blue);font-size:13px;margin-bottom:10px;">${LIST_LABELS[key]||key}</div>
+      <div id="cfgList_${key}">
+        ${configLists[key].map((v,i)=>`
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+            <input type="text" value="${esc(v)}" style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 8px;font-size:12px;text-transform:uppercase;"
+              onchange="updateListItem('${key}',${i},this.value.toUpperCase())">
+            <button onclick="removeListItem('${key}',${i})" style="background:#fce8e8;border:1px solid #e8c8c8;border-radius:5px;padding:3px 8px;cursor:pointer;color:#c0392b;font-size:12px;">✕</button>
+          </div>`).join('')}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <input type="text" id="cfgNew_${key}" placeholder="Nueva opción..." style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 8px;font-size:12px;text-transform:uppercase;"
+          onkeydown="if(event.key==='Enter')addListItem('${key}')">
+        <button onclick="addListItem('${key}')" style="background:var(--accent);color:#fff;border:none;border-radius:5px;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:600;">+ Añadir</button>
+      </div>
+      <button onclick="resetList('${key}')" style="margin-top:8px;background:none;border:none;color:#8c8c8c;font-size:11px;cursor:pointer;text-decoration:underline;">↺ Restablecer por defecto</button>
+    </div>`).join('');
+}
+
+function updateListItem(key,idx,val){
+  configLists[key][idx]=val;saveConfigLists();
+}
+function removeListItem(key,idx){
+  if(configLists[key].length<=1){showToast('⚠ Debe haber al menos una opción.');return;}
+  configLists[key].splice(idx,1);saveConfigLists();renderConfig();
+}
+function addListItem(key){
+  const el=document.getElementById('cfgNew_'+key);
+  const val=(el.value||'').trim().toUpperCase();
+  if(!val){showToast('Escribe un valor primero.');return;}
+  if(configLists[key].includes(val)){showToast('Ya existe esa opción.');return;}
+  configLists[key].push(val);saveConfigLists();el.value='';renderConfig();
+  showToast('✅ Opción añadida a '+LIST_LABELS[key]);
+}
+function resetList(key){
+  if(!confirm('¿Restablecer la lista de '+LIST_LABELS[key]+' a los valores por defecto?'))return;
+  configLists[key]=JSON.parse(JSON.stringify(DEFAULT_LISTS[key]));
+  saveConfigLists();renderConfig();
+}
+
 async function clearAllData(){
   if(!canEdit('orden')){ showToast('Sin permisos para vaciar.'); return; }
   if(!confirm('⚠️ ¿Eliminar TODAS las líneas de planificación?\nEsta acción no se puede deshacer.')) return;
   if(!confirm('¿Seguro? Se borrarán todos los datos del Sheet.')) return;
   rows=[];
+  _allowEmptySave=true;
   try{
     await save();
     renderTable();updateStats();
     showToast('🗑 Planificación vaciada.');
   } catch(e){ showToast('⚠ Error: '+e.message); }
+  finally{ _allowEmptySave=false; }
 }
 
 function showLoading(msg){
@@ -1013,6 +1117,7 @@ if(currentUser){
 // Sync state
 let _isSaving=false;
 let _lastSaveTime=0;
+let _allowEmptySave=false;  // must be explicitly true to save empty rows
 
 function normaliseRows(plan){
   plan.forEach(r=>{
@@ -1036,12 +1141,17 @@ setInterval(async()=>{
   if(!currentUser||document.getElementById('appWrap').style.display==='none') return;
   try{
     const plan=await api({action:'getPlan'});
-    if(!Array.isArray(plan)||plan.length===0) return;
+    if(!Array.isArray(plan)) return;
+    // Don't overwrite local data with empty Sheet (import in progress)
+    if(plan.length===0 && rows.length>0){
+      console.log('Sync skipped: Sheet returned 0 rows but local has '+rows.length);
+      return;
+    }
     normaliseRows(plan);
     rows=plan;
     uid=rows.length?Math.max(...rows.map(r=>Number(r.id)))+1:1;
     renderTable();updateStats();
-  } catch(e){}
+  } catch(e){ console.warn('Sync error:',e); }
 }, 30000);
 </script>
 </body>
