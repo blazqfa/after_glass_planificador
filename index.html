@@ -98,6 +98,17 @@ textarea.editable{border:1px solid #c8c8c4;border-radius:5px;padding:5px 7px;fon
 .f-sel:focus{outline:none;border-color:#1a4f8a;}
 thead tr.filter-row{background:#eef4fc;}
 thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-align:middle;font-weight:normal;}
+.cfg-tab-btn{padding:6px 16px;border:1.5px solid #c8d8ed;background:#fff;color:var(--blue);border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;transition:all .15s;}
+.cfg-tab-btn.active{background:var(--blue);color:#fff;border-color:var(--blue);}
+.cfg-tab-btn:hover:not(.active){background:#e8eef7;}
+.perm-check{display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;color:#555;}
+.perm-check input{width:15px;height:15px;accent-color:var(--blue);}
+.user-card{background:#fff;border:1px solid #c8d8ed;border-radius:10px;padding:14px 16px;margin-bottom:10px;position:relative;}
+.user-card h4{color:var(--blue);font-size:13px;margin-bottom:8px;}
+.user-card .role-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;margin-left:8px;}
+.role-admin{background:#e8eef7;color:#1a4f8a;}
+.role-planner{background:#fce8f4;color:#c8007a;}
+.role-custom{background:#f0f8ee;color:#3a6d10;}
 .badge{display:inline-block;padding:2px 7px;border-radius:8px;font-size:11px;font-weight:500;}
 .badge.solicitado{background:#e8eef7;color:#1a4f8a;}
 .badge.pendiente{background:#fdf0d8;color:#8a5200;}
@@ -278,9 +289,24 @@ thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-
 </div>
 <!-- CONFIG -->
 <div id="tab-config" class="section">
-  <h2 style="color:var(--blue);margin-bottom:14px;font-size:16px;">⚙ Configuración de columnas desplegables</h2>
-  <p style="font-size:12.5px;color:#666;margin-bottom:16px;">Gestiona los valores disponibles en los campos marcados en verde (listas desplegables). Añade o elimina opciones según tus necesidades.</p>
-  <div id="configPanels" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;"></div>
+  <div style="display:flex;gap:10px;margin-bottom:16px;border-bottom:2px solid #e8eef7;padding-bottom:10px;">
+    <button class="cfg-tab-btn active" id="cfgTabListas" onclick="switchCfgTab('listas')">📋 Listas desplegables</button>
+    <button class="cfg-tab-btn" id="cfgTabUsuarios" onclick="switchCfgTab('usuarios')">👥 Usuarios y permisos</button>
+  </div>
+
+  <!-- Listas -->
+  <div id="cfgPanelListas">
+    <p style="font-size:12px;color:#666;margin-bottom:14px;">Gestiona los valores disponibles en los campos desplegables. Solo visible para Admin.</p>
+    <div id="configPanels" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;"></div>
+  </div>
+
+  <!-- Usuarios -->
+  <div id="cfgPanelUsuarios" style="display:none;">
+    <p style="font-size:12px;color:#666;margin-bottom:14px;">Crea, edita o elimina usuarios. Define qué pueden ver y hacer. Solo Admin puede acceder a esta sección.</p>
+    <div id="usersPanel"></div>
+    <button class="btn sm" onclick="showAddUserForm()" style="margin-top:14px;">✚ Añadir usuario</button>
+    <div id="addUserForm" style="display:none;margin-top:14px;background:#f8f8f8;border:1px solid #c8d8ed;border-radius:10px;padding:16px;max-width:500px;"></div>
+  </div>
 </div>
 
 </div><!-- /appWrap -->
@@ -332,11 +358,16 @@ const USERS={
   'Agazq123':{pass:'Agazq123',role:'agazq',label:'Agazq'}
 };
 // Also accept username-based login
-const USERS_BY_NAME={
-  'admin':{pass:'Razyel01',role:'admin',label:'Admin'},
-  'planner':{pass:'Planner123',role:'planner',label:'Planner'},
-  'agazq':{pass:'Agazq123',role:'agazq',label:'Agazq'}
+// ── Users stored in localStorage (admin can edit) ────────────
+const DEFAULT_USERS={
+  'admin':  {pass:'Razyel01',   role:'admin',   label:'Admin',   canEdit:true,  canImport:true,  canDelete:true,  canConfig:true,  tabs:['planificacion','gantt','historico','config']},
+  'planner':{pass:'Planner123', role:'planner', label:'Planner', canEdit:true,  canImport:true,  canDelete:true,  canConfig:false, tabs:['planificacion','gantt','historico']},
+  'agazq':  {pass:'Agazq123',   role:'agazq',   label:'Agazq',   canEdit:false, canImport:false, canDelete:false, canConfig:false, tabs:['planificacion','gantt'],
+             editFields:['fFab','qtyConf','ubicacion','notes']}
 };
+// Load from localStorage or use defaults
+let USERS_BY_NAME=JSON.parse(localStorage.getItem('ag_users')||'null')||JSON.parse(JSON.stringify(DEFAULT_USERS));
+function saveUsers(){ localStorage.setItem('ag_users',JSON.stringify(USERS_BY_NAME)); }
 
 let currentUser=JSON.parse(sessionStorage.getItem('ag_user')||'null');
 
@@ -373,20 +404,49 @@ function doLogout(){
 
 function applyRoleUI(){
   if(!currentUser)return;
-  const role=currentUser.role;
-  // admin: all; planner: all; agazq: only fFab + view
-  const adminOnly=['btnNueva','btnArchivarTodo','btnVaciarHist'];
-  const plannerPlus=['btnNueva','btnArchivarTodo','btnVaciarHist'];
-  adminOnly.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(role==='admin'||role==='planner')?'':'none';});
-  // file import only admin/planner
-  const fi=document.getElementById('xlsFile');if(fi)fi.disabled=(role==='agazq');
+  const u=USERS_BY_NAME[currentUser.username]||{};
+  // Show/hide tabs based on user permissions
+  const tabMap={planificacion:'tabPlan',gantt:'tabGantt',historico:'tabHist',config:'tabConfig'};
+  Object.entries(tabMap).forEach(([tab,btnId])=>{
+    const btn=document.getElementById(btnId);
+    if(btn) btn.style.display=canSeeTab(tab)?'':'none';
+  });
+  // Import file
+  const fi=document.getElementById('xlsFile');
+  if(fi) fi.disabled=!u.canImport;
+  // Menu items visibility (hide delete/archive/import if no permission)
+  const btnNueva=document.getElementById('btnNueva');
+  if(btnNueva) btnNueva.style.display=u.canImport?'block':'none';
+  const btnArchTodo=document.getElementById('btnArchivarTodo');
+  if(btnArchTodo) btnArchTodo.style.display=u.canDelete?'block':'none';
+  const btnVacHist=document.getElementById('btnVaciarHist');
+  if(btnVacHist) btnVacHist.style.display=u.canDelete?'block':'none';
 }
 
 function canEdit(field){
   if(!currentUser)return false;
-  if(currentUser.role==='admin'||currentUser.role==='planner')return true;
-  if(currentUser.role==='agazq')return field==='fFab'||field==='notes';
+  const u=USERS_BY_NAME[currentUser.username];
+  if(!u)return false;
+  if(u.canEdit)return true;
+  // Limited edit: check editFields list
+  if(u.editFields&&u.editFields.includes(field))return true;
   return false;
+}
+function canDo(action){
+  if(!currentUser)return false;
+  const u=USERS_BY_NAME[currentUser.username];
+  if(!u)return false;
+  if(action==='import')return !!u.canImport;
+  if(action==='delete')return !!u.canDelete;
+  if(action==='config')return !!u.canConfig;
+  if(action==='archive')return !!u.canDelete;
+  return false;
+}
+function canSeeTab(tab){
+  if(!currentUser)return false;
+  const u=USERS_BY_NAME[currentUser.username];
+  if(!u)return false;
+  return !u.tabs || u.tabs.includes(tab);
 }
 
 // ============ DATA ============
@@ -482,7 +542,7 @@ function switchTab(t){
   const el=document.getElementById(map[t]);if(el)el.classList.add('active');
   if(t==='historico')renderHistory();
   if(t==='gantt')renderGantt();
-  if(t==='config')renderConfig();
+  if(t==='config'){ renderConfig(); switchCfgTab('listas'); }
 }
 
 function applyFilters(){
@@ -1037,6 +1097,174 @@ let configLists=JSON.parse(localStorage.getItem('ag_configLists')||'null')||JSON
 function saveConfigLists(){ localStorage.setItem('ag_configLists',JSON.stringify(configLists)); }
 
 function getListOptions(key){ return configLists[key]||DEFAULT_LISTS[key]||[]; }
+
+// ════════ CONFIG TAB SWITCHING ════════
+function switchCfgTab(tab){
+  document.querySelectorAll('.cfg-tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('cfgPanelListas').style.display=tab==='listas'?'block':'none';
+  document.getElementById('cfgPanelUsuarios').style.display=tab==='usuarios'?'block':'none';
+  document.getElementById(tab==='listas'?'cfgTabListas':'cfgTabUsuarios').classList.add('active');
+  if(tab==='usuarios') renderUsers();
+}
+
+// ════════ USER MANAGEMENT ════════
+const ALL_COLS_IDS=['ref','desc','qty','qtyConf','um','orden','fEnt','fConf','origen','fIni','fFin','estado','fRec','yport','stock','ubicacion','notes'];
+const ALL_COLS_LABELS={ref:'ARTÍCULO',desc:'DESCRIPCIÓN',qty:'QTY',qtyConf:'QTY CONF.',um:'UM',orden:'ORDEN',fEnt:'F.ENTREGA SAP',fConf:'F.CONFIRMADA',origen:'PRODUCCIÓN(ORIGEN)',fIni:'INICIO PROD.',fFin:'FIN PROD.',estado:'ESTADO',fRec:'F.RECEPCIÓN',yport:'YPORTCONS',stock:'STOCK O',ubicacion:'UBICACIÓN',notes:'NOTAS'};
+
+function renderUsers(){
+  if(!canDo('config')){ document.getElementById('usersPanel').innerHTML='<p style="color:#c0392b;font-size:13px;">⛔ Solo el administrador puede gestionar usuarios.</p>'; return; }
+  const panel=document.getElementById('usersPanel');
+  panel.innerHTML=Object.entries(USERS_BY_NAME).map(([uname,u])=>`
+    <div class="user-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div>
+          <h4 style="display:inline">${esc(u.label||uname)}</h4>
+          <span class="role-badge ${u.role==='admin'?'role-admin':u.role==='planner'?'role-planner':'role-custom'}">${u.role.toUpperCase()}</span>
+          <span style="font-size:11px;color:#888;margin-left:8px;">@${esc(uname)}</span>
+        </div>
+        ${uname!=='admin'?`<button onclick="deleteUser('${uname}')" style="background:#fce8e8;border:1px solid #e8c8c8;border-radius:5px;padding:3px 9px;cursor:pointer;color:#c0392b;font-size:11px;">✕ Eliminar</button>`:''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">USUARIO</div>
+          <input type="text" value="${esc(uname)}" disabled style="width:100%;border:1px solid #ddd;border-radius:5px;padding:4px 7px;font-size:12px;background:#f5f5f5;color:#888;">
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">CONTRASEÑA</div>
+          <div style="display:flex;gap:4px;">
+            <input type="password" id="pass_${uname}" value="${esc(u.pass)}" style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 7px;font-size:12px;">
+            <button onclick="updatePass('${uname}')" style="background:var(--blue);color:#fff;border:none;border-radius:5px;padding:4px 9px;cursor:pointer;font-size:11px;">Guardar</button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">NOMBRE VISIBLE</div>
+          <div style="display:flex;gap:4px;">
+            <input type="text" id="label_${uname}" value="${esc(u.label||uname)}" style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 7px;font-size:12px;">
+            <button onclick="updateLabel('${uname}')" style="background:var(--blue);color:#fff;border:none;border-radius:5px;padding:4px 9px;cursor:pointer;font-size:11px;">✓</button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">ROL</div>
+          <select id="role_${uname}" ${uname==='admin'?'disabled':''} onchange="updateRole('${uname}',this.value)" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:4px 6px;font-size:12px;background:#fff;">
+            <option value="admin"${u.role==='admin'?' selected':''}>Admin</option>
+            <option value="planner"${u.role==='planner'?' selected':''}>Planner</option>
+            <option value="custom"${u.role==='custom'?' selected':''}>Personalizado</option>
+          </select>
+        </div>
+      </div>
+      <!-- Permisos generales -->
+      <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:6px;">PERMISOS GENERALES</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+        ${[['canEdit','Editar datos'],['canImport','Importar Excel'],['canDelete','Eliminar/Archivar'],['canConfig','Acceder a Config']].map(([k,lbl])=>`
+          <label class="perm-check">
+            <input type="checkbox" ${u[k]?'checked':''} ${uname==='admin'?'disabled':''} onchange="updatePerm('${uname}','${k}',this.checked)"> ${lbl}
+          </label>`).join('')}
+      </div>
+      <!-- Pestañas visibles -->
+      <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:6px;">PESTAÑAS VISIBLES</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+        ${[['planificacion','Planificación'],['gantt','Programación'],['historico','Histórico'],['config','Configuración']].map(([tab,lbl])=>`
+          <label class="perm-check">
+            <input type="checkbox" ${(u.tabs||[]).includes(tab)?'checked':''} ${uname==='admin'?'disabled':''} onchange="updateTab('${uname}','${tab}',this.checked)"> ${lbl}
+          </label>`).join('')}
+      </div>
+      <!-- Campos editables (solo si canEdit=false) -->
+      ${!u.canEdit?`
+      <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:6px;">CAMPOS QUE PUEDE EDITAR</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;">
+        ${ALL_COLS_IDS.map(fid=>`
+          <label class="perm-check">
+            <input type="checkbox" ${(u.editFields||[]).includes(fid)?'checked':''} onchange="updateEditField('${uname}','${fid}',this.checked)"> ${ALL_COLS_LABELS[fid]||fid}
+          </label>`).join('')}
+      </div>`:''}
+    </div>`).join('');
+}
+
+function updatePass(uname){
+  const val=document.getElementById('pass_'+uname)?.value?.trim();
+  if(!val){showToast('La contraseña no puede estar vacía.');return;}
+  USERS_BY_NAME[uname].pass=val;saveUsers();showToast('✅ Contraseña actualizada para '+uname);
+}
+function updateLabel(uname){
+  const val=document.getElementById('label_'+uname)?.value?.trim();
+  if(!val)return;
+  USERS_BY_NAME[uname].label=val;saveUsers();renderUsers();showToast('✅ Nombre actualizado');
+}
+function updateRole(uname,role){
+  if(uname==='admin')return;
+  USERS_BY_NAME[uname].role=role;
+  if(role==='admin'||role==='planner'){USERS_BY_NAME[uname].canEdit=true;USERS_BY_NAME[uname].canImport=true;USERS_BY_NAME[uname].canDelete=true;}
+  saveUsers();renderUsers();
+}
+function updatePerm(uname,perm,val){
+  if(uname==='admin')return;
+  USERS_BY_NAME[uname][perm]=val;saveUsers();renderUsers();
+}
+function updateTab(uname,tab,val){
+  if(uname==='admin')return;
+  if(!USERS_BY_NAME[uname].tabs)USERS_BY_NAME[uname].tabs=[];
+  if(val){if(!USERS_BY_NAME[uname].tabs.includes(tab))USERS_BY_NAME[uname].tabs.push(tab);}
+  else {USERS_BY_NAME[uname].tabs=USERS_BY_NAME[uname].tabs.filter(t=>t!==tab);}
+  saveUsers();
+}
+function updateEditField(uname,field,val){
+  if(!USERS_BY_NAME[uname].editFields)USERS_BY_NAME[uname].editFields=[];
+  if(val){if(!USERS_BY_NAME[uname].editFields.includes(field))USERS_BY_NAME[uname].editFields.push(field);}
+  else {USERS_BY_NAME[uname].editFields=USERS_BY_NAME[uname].editFields.filter(f=>f!==field);}
+  saveUsers();
+}
+function deleteUser(uname){
+  if(uname==='admin'){showToast('No se puede eliminar el admin.');return;}
+  if(!confirm('¿Eliminar usuario '+uname+'?'))return;
+  delete USERS_BY_NAME[uname];saveUsers();renderUsers();showToast('🗑 Usuario eliminado');
+}
+function showAddUserForm(){
+  const f=document.getElementById('addUserForm');
+  f.style.display=f.style.display==='none'?'block':'none';
+  if(f.style.display==='block') f.innerHTML=`
+    <h4 style="color:var(--blue);margin-bottom:12px;">Nuevo usuario</h4>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">USUARIO (login)</div>
+        <input type="text" id="nu_user" placeholder="ej: usuario1" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 8px;font-size:12px;"></div>
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">NOMBRE VISIBLE</div>
+        <input type="text" id="nu_label" placeholder="ej: Ana García" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 8px;font-size:12px;"></div>
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">CONTRASEÑA</div>
+        <input type="text" id="nu_pass" placeholder="mínimo 6 caracteres" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 8px;font-size:12px;"></div>
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">ROL</div>
+        <select id="nu_role" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 6px;font-size:12px;background:#fff;">
+          <option value="planner">Planner (edición completa)</option>
+          <option value="custom">Personalizado (permisos limitados)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn sm" onclick="saveNewUser()">✚ Crear usuario</button>
+      <button class="btn sm outline" onclick="document.getElementById('addUserForm').style.display='none'">Cancelar</button>
+    </div>`;
+}
+function saveNewUser(){
+  const uname=(document.getElementById('nu_user')?.value||'').trim().toLowerCase();
+  const label=(document.getElementById('nu_label')?.value||'').trim();
+  const pass=(document.getElementById('nu_pass')?.value||'').trim();
+  const role=document.getElementById('nu_role')?.value||'custom';
+  if(!uname||!pass||!label){showToast('Completa todos los campos.');return;}
+  if(uname.length<3){showToast('El usuario debe tener al menos 3 caracteres.');return;}
+  if(pass.length<6){showToast('La contraseña debe tener al menos 6 caracteres.');return;}
+  if(USERS_BY_NAME[uname]){showToast('Ya existe un usuario con ese nombre.');return;}
+  USERS_BY_NAME[uname]={
+    pass,role,label,
+    canEdit:role==='planner',
+    canImport:role==='planner',
+    canDelete:role==='planner',
+    canConfig:false,
+    tabs:['planificacion','gantt'],
+    editFields:role==='custom'?['fFab','qtyConf','notas']:[]
+  };
+  saveUsers();
+  document.getElementById('addUserForm').style.display='none';
+  renderUsers();
+  showToast('✅ Usuario '+label+' creado correctamente');
+}
 
 function renderConfig(){
   const panel=document.getElementById('configPanels');
