@@ -366,30 +366,43 @@ const DEFAULT_USERS={
              editFields:['fFab','qtyConf','ubicacion','notes']}
 };
 // Load from localStorage or use defaults
-let USERS_BY_NAME=JSON.parse(localStorage.getItem('ag_users')||'null')||JSON.parse(JSON.stringify(DEFAULT_USERS));
-function saveUsers(){ localStorage.setItem('ag_users',JSON.stringify(USERS_BY_NAME)); }
+let _storedUsers=null;
+try{ _storedUsers=JSON.parse(localStorage.getItem('ag_users')||'null'); }catch(e){}
+let USERS_BY_NAME=_storedUsers||JSON.parse(JSON.stringify(DEFAULT_USERS));
+// Always ensure admin exists with correct password
+if(!USERS_BY_NAME['admin']){
+  USERS_BY_NAME['admin']=JSON.parse(JSON.stringify(DEFAULT_USERS['admin']));
+}
+function saveUsers(){
+  // Never remove admin
+  if(!USERS_BY_NAME['admin']) USERS_BY_NAME['admin']=JSON.parse(JSON.stringify(DEFAULT_USERS['admin']));
+  localStorage.setItem('ag_users',JSON.stringify(USERS_BY_NAME));
+}
 
 let currentUser=JSON.parse(sessionStorage.getItem('ag_user')||'null');
 
-async function doLogin(){
+function doLogin(){
   const u=document.getElementById('loginUser').value.trim().toLowerCase();
   const p=document.getElementById('loginPass').value;
   const errEl=document.getElementById('loginErr');
   const btn=document.querySelector('.btn-login');
-  btn.textContent='Entrando...';btn.disabled=true;
-  try{
-    const user=await api({action:'login',user:u,pass:p});
-    currentUser={username:u,role:user.role,label:user.label};
-    sessionStorage.setItem('ag_user',JSON.stringify(currentUser));
-    document.getElementById('loginWrap').style.display='none';
-    document.getElementById('appWrap').style.display='block';
-    document.getElementById('userLabel').textContent=user.label;
-    applyRoleUI();
-    await loadData();
-    errEl.textContent='';
-  } catch(e){
+
+  // Validate locally — fast, no network needed
+  const found=USERS_BY_NAME[u];
+  if(!found || found.pass !== p){
     errEl.textContent='Usuario o contraseña incorrectos.';
-  } finally { btn.textContent='Entrar';btn.disabled=false; }
+    btn.textContent='Entrar';btn.disabled=false;
+    return;
+  }
+
+  currentUser={username:u, role:found.role, label:found.label||u};
+  sessionStorage.setItem('ag_user',JSON.stringify(currentUser));
+  document.getElementById('loginWrap').style.display='none';
+  document.getElementById('appWrap').style.display='block';
+  document.getElementById('userLabel').textContent=found.label||u;
+  errEl.textContent='';
+  applyRoleUI();
+  loadData();
 }
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.getElementById('loginWrap').style.display!=='none')doLogin();});
 
