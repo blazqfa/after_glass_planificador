@@ -479,18 +479,20 @@ let uid=rows.length?Math.max(...rows.map(r=>r.id))+1:1;
 let openDetail=null,ganttOffset=0,pendingDups=[];
 
 async function save(){
+  // GUARD: never overwrite Sheet with empty data unless explicitly cleared
   if(rows.length===0 && !_allowEmptySave){
-    console.warn('save() blocked — rows empty');
+    console.warn('save() blocked: rows is empty and _allowEmptySave is false');
     return;
   }
   _isSaving=true;
+  _syncPaused=true;
   try{
     await api({action:'savePlan',rows:JSON.stringify(rows)});
   } catch(e){
     showToast('⚠ Error guardando: '+e.message);
-    throw e;
   } finally{
     _isSaving=false;
+    setTimeout(()=>{ _syncPaused=false; },8000);
   }
 }
 async function saveHist(){
@@ -565,8 +567,7 @@ function loadFile(e){
   if(!canEdit('orden')){showToast('Sin permisos para importar.');return;}
   const f=e.target.files[0];if(!f)return;
   const reader=new FileReader();
-  reader.onload=async ev=>{
-    _autoSyncEnabled=false; // CRITICAL: pause sync during import
+  reader.onload=ev=>{
     const wb=XLSX.read(ev.target.result,{type:'binary',cellDates:true});
     const ws=wb.Sheets[wb.SheetNames[0]];
     const data=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,dateNF:'yyyy-mm-dd'});
@@ -636,24 +637,9 @@ function loadFile(e){
         added++;
       }
     }
-    // Show result
-    renderTable();
-    updateStats();
-    e.target.value='';
-    if(dups.length>0){
-      pendingDups=dups;
-      openDupModal(added);
-    }
-    if(rows.length>0){
-      showToast('⏳ Guardando '+rows.length+' líneas en Google Sheets...');
-      try{
-        await save(); // AWAITED — waits for Sheet to confirm
-        showToast('✅ '+added+' línea(s) importadas y guardadas en Sheets.');
-      } catch(e2){
-        showToast('⚠ Error al guardar: '+e2.message);
-      }
-    }
-    setTimeout(()=>{ _autoSyncEnabled=true; }, 3000); // resume sync
+    save();renderTable();e.target.value='';
+    if(dups.length>0){pendingDups=dups;openDupModal(added);}
+    else showToast(`✅ ${added} línea(s) importada(s). Sin duplicados.`);
   };
   reader.readAsBinaryString(f);
 }
@@ -690,13 +676,8 @@ async function importSelected(){
       ...toAdd.map(r=>api({action:'addRow',row:JSON.stringify(r)})),
       ...toUpdate.map(r=>api({action:'updateRow',row:JSON.stringify(r)}))
     ]);
-    if(rows.length>0){
-      try{
-        await save();
-      } catch(e2){ showToast('⚠ Error guardando: '+e2.message); }
-    }
     renderTable();closeDupModal();
-    showToast(count>0?'✅ '+count+' línea(s) añadidas/actualizadas.':'Sin cambios.');
+    showToast(count>0?'✅ '+count+' duplicado(s) incluido(s).':'Sin cambios.');
   } catch(e){ showToast('⚠ Error: '+e.message); }
 }
 function closeDupModal(){document.getElementById('dupModal').style.display='none';pendingDups=[];}
@@ -939,11 +920,8 @@ async function archiveAll(){
   rows=[];openDetail=null;
   try{
     _allowEmptySave=true;
-  try{
-    await Promise.all([save(),saveHist()]);
-  }finally{
-    _allowEmptySave=false;
-  }
+  await Promise.all([save(),saveHist()]);
+  _allowEmptySave=false;
     renderTable();showToast('📦 Todo archivado');
   } catch(e){ showToast('⚠ Error: '+e.message); }
 }
@@ -1059,44 +1037,352 @@ function closeMenus(){
 document.addEventListener('click', closeMenus);
 
 // ============ LOAD DATA FROM SHEETS ============
-// ══ Auto-sync state ══
-let _autoSyncEnabled=true;
-
-// Auto-sync every 60s — READ ONLY, never writes to Sheet
-setInterval(async function syncFromSheet(){
-  if(!_autoSyncEnabled||_isSaving||!currentUser) return;
-  if(document.getElementById('appWrap').style.display==='none') return;
-  try{
-    const plan=await api({action:'getPlan'});
-    if(!Array.isArray(plan)||plan.length===0&&rows.length>0) return;
-    normaliseRows(plan);
-    rows=plan;
-    uid=rows.length?Math.max(...rows.map(r=>Number(r.id)||0))+1:1;
-    renderTable();updateStats();
-  }catch(e){}
-},60000);
-
 async function loadData(){
-  showLoading('Cargando datos...');
-  _autoSyncEnabled=false;
+  showLoading('Cargando datos desde Google Sheets...');
   try{
-    const [plan,hist]=await Promise.all([
+    const [plan, hist] = await Promise.all([
       api({action:'getPlan'}),
       api({action:'getHist'})
     ]);
-    rows    = normaliseRows(Array.isArray(plan)?plan:[]);
-    history = Array.isArray(hist)?hist:[];
-    history.forEach(r=>{ r.id=Number(r.id)||0; });
-    uid=rows.length?Math.max(...rows.map(r=>Number(r.id)||0))+1:1;
+    rows    = Array.isArray(plan) ? plan : [];
+    history = Array.isArray(hist) ? hist : [];
+    // normalise types
+    rows.forEach(r=>{
+      r.qtyChanged = (r.qtyChanged==='true'||r.qtyChanged===true);
+      r.id = Number(r.id) || Date.now();
+      // default new fields for old rows
+      if(!r.um)      r.um='';
+      if(!r.qtyConf) r.qtyConf='';
+      if(!r.fEnt)    r.fEnt='';
+      if(!r.fIni)  r.fIni='';
+      if(!r.fFin)  r.fFin='';
+      if(!r.fRec)  r.fRec='';
+      if(!r.yport) r.yport='';
+      // uppercase state/stock
+      if(r.estado) r.estado=r.estado.toUpperCase();
+      if(r.stock)  r.stock=r.stock.toUpperCase();
+      if(r.origen) r.origen=r.origen.toUpperCase();
+    });
+    history.forEach(r=>{ r.id = Number(r.id)||Date.now(); });
+    uid = rows.length ? Math.max(...rows.map(r=>Number(r.id)))+1 : 1;
     renderTable();
     updateStats();
     hideLoading();
-    showToast('✅ '+rows.length+' línea(s) cargadas');
+    showToast('✅ Datos sincronizados — '+rows.length+' línea(s)');
   } catch(e){
     hideLoading();
     showToast('⚠ Error cargando: '+e.message);
-  } finally{
-    setTimeout(()=>{ _autoSyncEnabled=true; },5000);
+    console.error('loadData error:', e);
   }
 }
 
+// ── Reload button visible in app ──────────────────────────
+function reloadData(){ rows=[];history=[];loadData(); }
+
+// ════════ CONFIGURABLE DROPDOWN LISTS ════════
+const DEFAULT_LISTS={
+  origen: ['PARMA','ABBIATEGRASSO','AZUQUECA','TORRILE2'],
+  estado: ['SOLICITADO','PENDIENTE','SERVIDO','TERMINADO'],
+  yport:  ['ACTIVO','ELIMINADO'],
+  stock:  ['SI','NO']
+};
+const LIST_LABELS={
+  origen:'PRODUCCIÓN (ORIGEN)',
+  estado:'ESTADO',
+  yport:'YPORTCONS',
+  stock:'STOCK O'
+};
+let configLists=JSON.parse(localStorage.getItem('ag_configLists')||'null')||JSON.parse(JSON.stringify(DEFAULT_LISTS));
+
+function saveConfigLists(){ localStorage.setItem('ag_configLists',JSON.stringify(configLists)); }
+
+function getListOptions(key){ return configLists[key]||DEFAULT_LISTS[key]||[]; }
+
+// ════════ CONFIG TAB SWITCHING ════════
+function switchCfgTab(tab){
+  document.querySelectorAll('.cfg-tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('cfgPanelListas').style.display=tab==='listas'?'block':'none';
+  document.getElementById('cfgPanelUsuarios').style.display=tab==='usuarios'?'block':'none';
+  document.getElementById(tab==='listas'?'cfgTabListas':'cfgTabUsuarios').classList.add('active');
+  if(tab==='usuarios') renderUsers();
+}
+
+// ════════ USER MANAGEMENT ════════
+const ALL_COLS_IDS=['ref','desc','qty','qtyConf','um','orden','fEnt','fConf','origen','fIni','fFin','estado','fRec','yport','stock','ubicacion','notes'];
+const ALL_COLS_LABELS={ref:'ARTÍCULO',desc:'DESCRIPCIÓN',qty:'QTY',qtyConf:'QTY CONF.',um:'UM',orden:'ORDEN',fEnt:'F.ENTREGA SAP',fConf:'F.CONFIRMADA',origen:'PRODUCCIÓN(ORIGEN)',fIni:'INICIO PROD.',fFin:'FIN PROD.',estado:'ESTADO',fRec:'F.RECEPCIÓN',yport:'YPORTCONS',stock:'STOCK O',ubicacion:'UBICACIÓN',notes:'NOTAS'};
+
+function renderUsers(){
+  if(!canDo('config')){ document.getElementById('usersPanel').innerHTML='<p style="color:#c0392b;font-size:13px;">⛔ Solo el administrador puede gestionar usuarios.</p>'; return; }
+  const panel=document.getElementById('usersPanel');
+  panel.innerHTML=Object.entries(USERS_BY_NAME).map(([uname,u])=>`
+    <div class="user-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div>
+          <h4 style="display:inline">${esc(u.label||uname)}</h4>
+          <span class="role-badge ${u.role==='admin'?'role-admin':u.role==='planner'?'role-planner':'role-custom'}">${u.role.toUpperCase()}</span>
+          <span style="font-size:11px;color:#888;margin-left:8px;">@${esc(uname)}</span>
+        </div>
+        ${uname!=='admin'?`<button onclick="deleteUser('${uname}')" style="background:#fce8e8;border:1px solid #e8c8c8;border-radius:5px;padding:3px 9px;cursor:pointer;color:#c0392b;font-size:11px;">✕ Eliminar</button>`:''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">USUARIO</div>
+          <input type="text" value="${esc(uname)}" disabled style="width:100%;border:1px solid #ddd;border-radius:5px;padding:4px 7px;font-size:12px;background:#f5f5f5;color:#888;">
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">CONTRASEÑA</div>
+          <div style="display:flex;gap:4px;">
+            <input type="password" id="pass_${uname}" value="${esc(u.pass)}" style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 7px;font-size:12px;">
+            <button onclick="updatePass('${uname}')" style="background:var(--blue);color:#fff;border:none;border-radius:5px;padding:4px 9px;cursor:pointer;font-size:11px;">Guardar</button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">NOMBRE VISIBLE</div>
+          <div style="display:flex;gap:4px;">
+            <input type="text" id="label_${uname}" value="${esc(u.label||uname)}" style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 7px;font-size:12px;">
+            <button onclick="updateLabel('${uname}')" style="background:var(--blue);color:#fff;border:none;border-radius:5px;padding:4px 9px;cursor:pointer;font-size:11px;">✓</button>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:4px;">ROL</div>
+          <select id="role_${uname}" ${uname==='admin'?'disabled':''} onchange="updateRole('${uname}',this.value)" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:4px 6px;font-size:12px;background:#fff;">
+            <option value="admin"${u.role==='admin'?' selected':''}>Admin</option>
+            <option value="planner"${u.role==='planner'?' selected':''}>Planner</option>
+            <option value="custom"${u.role==='custom'?' selected':''}>Personalizado</option>
+          </select>
+        </div>
+      </div>
+      <!-- Permisos generales -->
+      <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:6px;">PERMISOS GENERALES</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+        ${[['canEdit','Editar datos'],['canImport','Importar Excel'],['canDelete','Eliminar/Archivar'],['canConfig','Acceder a Config']].map(([k,lbl])=>`
+          <label class="perm-check">
+            <input type="checkbox" ${u[k]?'checked':''} ${uname==='admin'?'disabled':''} onchange="updatePerm('${uname}','${k}',this.checked)"> ${lbl}
+          </label>`).join('')}
+      </div>
+      <!-- Pestañas visibles -->
+      <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:6px;">PESTAÑAS VISIBLES</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+        ${[['planificacion','Planificación'],['gantt','Programación'],['historico','Histórico'],['config','Configuración']].map(([tab,lbl])=>`
+          <label class="perm-check">
+            <input type="checkbox" ${(u.tabs||[]).includes(tab)?'checked':''} ${uname==='admin'?'disabled':''} onchange="updateTab('${uname}','${tab}',this.checked)"> ${lbl}
+          </label>`).join('')}
+      </div>
+      <!-- Campos editables (solo si canEdit=false) -->
+      ${!u.canEdit?`
+      <div style="font-size:11px;font-weight:700;color:#888;margin-bottom:6px;">CAMPOS QUE PUEDE EDITAR</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;">
+        ${ALL_COLS_IDS.map(fid=>`
+          <label class="perm-check">
+            <input type="checkbox" ${(u.editFields||[]).includes(fid)?'checked':''} onchange="updateEditField('${uname}','${fid}',this.checked)"> ${ALL_COLS_LABELS[fid]||fid}
+          </label>`).join('')}
+      </div>`:''}
+    </div>`).join('');
+}
+
+function updatePass(uname){
+  const val=document.getElementById('pass_'+uname)?.value?.trim();
+  if(!val){showToast('La contraseña no puede estar vacía.');return;}
+  USERS_BY_NAME[uname].pass=val;saveUsers();showToast('✅ Contraseña actualizada para '+uname);
+}
+function updateLabel(uname){
+  const val=document.getElementById('label_'+uname)?.value?.trim();
+  if(!val)return;
+  USERS_BY_NAME[uname].label=val;saveUsers();renderUsers();showToast('✅ Nombre actualizado');
+}
+function updateRole(uname,role){
+  if(uname==='admin')return;
+  USERS_BY_NAME[uname].role=role;
+  if(role==='admin'||role==='planner'){USERS_BY_NAME[uname].canEdit=true;USERS_BY_NAME[uname].canImport=true;USERS_BY_NAME[uname].canDelete=true;}
+  saveUsers();renderUsers();
+}
+function updatePerm(uname,perm,val){
+  if(uname==='admin')return;
+  USERS_BY_NAME[uname][perm]=val;saveUsers();renderUsers();
+}
+function updateTab(uname,tab,val){
+  if(uname==='admin')return;
+  if(!USERS_BY_NAME[uname].tabs)USERS_BY_NAME[uname].tabs=[];
+  if(val){if(!USERS_BY_NAME[uname].tabs.includes(tab))USERS_BY_NAME[uname].tabs.push(tab);}
+  else {USERS_BY_NAME[uname].tabs=USERS_BY_NAME[uname].tabs.filter(t=>t!==tab);}
+  saveUsers();
+}
+function updateEditField(uname,field,val){
+  if(!USERS_BY_NAME[uname].editFields)USERS_BY_NAME[uname].editFields=[];
+  if(val){if(!USERS_BY_NAME[uname].editFields.includes(field))USERS_BY_NAME[uname].editFields.push(field);}
+  else {USERS_BY_NAME[uname].editFields=USERS_BY_NAME[uname].editFields.filter(f=>f!==field);}
+  saveUsers();
+}
+function deleteUser(uname){
+  if(uname==='admin'){showToast('No se puede eliminar el admin.');return;}
+  if(!confirm('¿Eliminar usuario '+uname+'?'))return;
+  delete USERS_BY_NAME[uname];saveUsers();renderUsers();showToast('🗑 Usuario eliminado');
+}
+function showAddUserForm(){
+  const f=document.getElementById('addUserForm');
+  f.style.display=f.style.display==='none'?'block':'none';
+  if(f.style.display==='block') f.innerHTML=`
+    <h4 style="color:var(--blue);margin-bottom:12px;">Nuevo usuario</h4>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">USUARIO (login)</div>
+        <input type="text" id="nu_user" placeholder="ej: usuario1" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 8px;font-size:12px;"></div>
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">NOMBRE VISIBLE</div>
+        <input type="text" id="nu_label" placeholder="ej: Ana García" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 8px;font-size:12px;"></div>
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">CONTRASEÑA</div>
+        <input type="text" id="nu_pass" placeholder="mínimo 6 caracteres" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 8px;font-size:12px;"></div>
+      <div><div style="font-size:11px;font-weight:700;color:#888;margin-bottom:3px;">ROL</div>
+        <select id="nu_role" style="width:100%;border:1px solid #c8d8ed;border-radius:5px;padding:5px 6px;font-size:12px;background:#fff;">
+          <option value="planner">Planner (edición completa)</option>
+          <option value="custom">Personalizado (permisos limitados)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn sm" onclick="saveNewUser()">✚ Crear usuario</button>
+      <button class="btn sm outline" onclick="document.getElementById('addUserForm').style.display='none'">Cancelar</button>
+    </div>`;
+}
+function saveNewUser(){
+  const uname=(document.getElementById('nu_user')?.value||'').trim().toLowerCase();
+  const label=(document.getElementById('nu_label')?.value||'').trim();
+  const pass=(document.getElementById('nu_pass')?.value||'').trim();
+  const role=document.getElementById('nu_role')?.value||'custom';
+  if(!uname||!pass||!label){showToast('Completa todos los campos.');return;}
+  if(uname.length<3){showToast('El usuario debe tener al menos 3 caracteres.');return;}
+  if(pass.length<6){showToast('La contraseña debe tener al menos 6 caracteres.');return;}
+  if(USERS_BY_NAME[uname]){showToast('Ya existe un usuario con ese nombre.');return;}
+  USERS_BY_NAME[uname]={
+    pass,role,label,
+    canEdit:role==='planner',
+    canImport:role==='planner',
+    canDelete:role==='planner',
+    canConfig:false,
+    tabs:['planificacion','gantt'],
+    editFields:role==='custom'?['fFab','qtyConf','notas']:[]
+  };
+  saveUsers();
+  document.getElementById('addUserForm').style.display='none';
+  renderUsers();
+  showToast('✅ Usuario '+label+' creado correctamente');
+}
+
+function renderConfig(){
+  const panel=document.getElementById('configPanels');
+  if(!panel)return;
+  panel.innerHTML=Object.keys(configLists).map(key=>`
+    <div style="background:#fff;border:1px solid #c8d8ed;border-radius:10px;padding:16px;">
+      <div style="font-weight:700;color:var(--blue);font-size:13px;margin-bottom:10px;">${LIST_LABELS[key]||key}</div>
+      <div id="cfgList_${key}">
+        ${configLists[key].map((v,i)=>`
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+            <input type="text" value="${esc(v)}" style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 8px;font-size:12px;text-transform:uppercase;"
+              onchange="updateListItem('${key}',${i},this.value.toUpperCase())">
+            <button onclick="removeListItem('${key}',${i})" style="background:#fce8e8;border:1px solid #e8c8c8;border-radius:5px;padding:3px 8px;cursor:pointer;color:#c0392b;font-size:12px;">✕</button>
+          </div>`).join('')}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <input type="text" id="cfgNew_${key}" placeholder="Nueva opción..." style="flex:1;border:1px solid #c8d8ed;border-radius:5px;padding:4px 8px;font-size:12px;text-transform:uppercase;"
+          onkeydown="if(event.key==='Enter')addListItem('${key}')">
+        <button onclick="addListItem('${key}')" style="background:var(--accent);color:#fff;border:none;border-radius:5px;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:600;">+ Añadir</button>
+      </div>
+      <button onclick="resetList('${key}')" style="margin-top:8px;background:none;border:none;color:#8c8c8c;font-size:11px;cursor:pointer;text-decoration:underline;">↺ Restablecer por defecto</button>
+    </div>`).join('');
+}
+
+function updateListItem(key,idx,val){
+  configLists[key][idx]=val;saveConfigLists();
+}
+function removeListItem(key,idx){
+  if(configLists[key].length<=1){showToast('⚠ Debe haber al menos una opción.');return;}
+  configLists[key].splice(idx,1);saveConfigLists();renderConfig();
+}
+function addListItem(key){
+  const el=document.getElementById('cfgNew_'+key);
+  const val=(el.value||'').trim().toUpperCase();
+  if(!val){showToast('Escribe un valor primero.');return;}
+  if(configLists[key].includes(val)){showToast('Ya existe esa opción.');return;}
+  configLists[key].push(val);saveConfigLists();el.value='';renderConfig();
+  showToast('✅ Opción añadida a '+LIST_LABELS[key]);
+}
+function resetList(key){
+  if(!confirm('¿Restablecer la lista de '+LIST_LABELS[key]+' a los valores por defecto?'))return;
+  configLists[key]=JSON.parse(JSON.stringify(DEFAULT_LISTS[key]));
+  saveConfigLists();renderConfig();
+}
+
+async function clearAllData(){
+  if(!canEdit('orden')){ showToast('Sin permisos para vaciar.'); return; }
+  if(!confirm('⚠️ ¿Eliminar TODAS las líneas de planificación?\nEsta acción no se puede deshacer.')) return;
+  if(!confirm('¿Seguro? Se borrarán todos los datos del Sheet.')) return;
+  rows=[];
+  _allowEmptySave=true;
+  try{
+    await save();
+    renderTable();updateStats();
+    showToast('🗑 Planificación vaciada.');
+  } catch(e){ showToast('⚠ Error: '+e.message); }
+  finally{ _allowEmptySave=false; }
+}
+
+function showLoading(msg){
+  const el=document.getElementById('loadingOverlay');
+  document.getElementById('loadingMsg').textContent=msg||'Cargando...';
+  el.style.display='flex';
+}
+function hideLoading(){
+  document.getElementById('loadingOverlay').style.display='none';
+}
+
+// ============ INIT ============
+injectLogos();
+// On page reload, if user session exists → go straight to app and load fresh data
+if(currentUser){
+  document.getElementById('loginWrap').style.display='none';
+  document.getElementById('appWrap').style.display='block';
+  document.getElementById('userLabel').textContent=currentUser.label;
+  applyRoleUI();
+  loadData(); // always fresh from Sheets
+}
+
+// Sync state
+let _isSaving=false;
+let _lastSaveTime=0;
+let _allowEmptySave=false;  // must be explicitly true to save empty rows
+
+function normaliseRows(plan){
+  plan.forEach(r=>{
+    r.qtyChanged=(r.qtyChanged==='true'||r.qtyChanged===true);
+    r.id=Number(r.id)||Date.now();
+    if(!r.um)r.um='';if(!r.qtyConf)r.qtyConf='';
+    if(!r.fEnt)r.fEnt='';if(!r.fIni)r.fIni='';
+    if(!r.fFin)r.fFin='';if(!r.fRec)r.fRec='';if(!r.yport)r.yport='';
+    if(r.estado)r.estado=r.estado.toUpperCase();
+    if(r.stock)r.stock=r.stock.toUpperCase();
+    if(r.origen)r.origen=r.origen.toUpperCase();
+  });
+  return plan;
+}
+
+// Real-time sync every 30s — always reads fresh from Sheets
+// Uses timestamp in Sheet to detect changes without overwriting local edits
+let _syncPaused=false;
+setInterval(async()=>{
+  if(_syncPaused||_isSaving) return;
+  if(!currentUser||document.getElementById('appWrap').style.display==='none') return;
+  try{
+    const plan=await api({action:'getPlan'});
+    if(!Array.isArray(plan)) return;
+    // Don't overwrite local data with empty Sheet (import in progress)
+    if(plan.length===0 && rows.length>0){
+      console.log('Sync skipped: Sheet returned 0 rows but local has '+rows.length);
+      return;
+    }
+    normaliseRows(plan);
+    rows=plan;
+    uid=rows.length?Math.max(...rows.map(r=>Number(r.id)))+1:1;
+    renderTable();updateStats();
+  } catch(e){ console.warn('Sync error:',e); }
+}, 30000);
+</script>
+</body>
+</html>
