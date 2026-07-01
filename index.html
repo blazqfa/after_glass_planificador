@@ -191,10 +191,15 @@ thead tr.filter-row th{padding:3px 4px;border-bottom:2px solid #c8d8ed;vertical-
     <div class="logos" id="loginLogos"></div>
     <h2>Iniciar sesión</h2>
     <p>Introduce tus credenciales para acceder</p>
-    <input id="loginUser" class="login-field" type="text" placeholder="Usuario" autocomplete="off">
-    <input id="loginPass" class="login-field" type="password" placeholder="Contraseña">
+    <input id="loginUser" class="login-field" type="text" placeholder="Usuario (admin / planner / agazq)" autocomplete="off">
+    <input id="loginPass" class="login-field" type="password" placeholder="Contraseña" onkeydown="if(event.key==='Enter')doLogin()">
     <button class="btn-login" onclick="doLogin()">Entrar</button>
     <div id="loginErr" class="login-err"></div>
+    <div style="margin-top:14px;padding-top:10px;border-top:1px solid #f0e0f0;">
+      <button onclick="resetUsers()" style="background:none;border:none;color:#aaa;font-size:10px;cursor:pointer;text-decoration:underline;">
+        ↺ Restablecer contraseñas originales
+      </button>
+    </div>
   </div>
 </div>
 
@@ -358,48 +363,78 @@ const USERS={
   'Agazq123':{pass:'Agazq123',role:'agazq',label:'Agazq'}
 };
 // Also accept username-based login
-// ── Users stored in localStorage (admin can edit) ────────────
+// ── MASTER PASSWORDS — always work, cannot be changed ────────
+const MASTER_USERS={
+  'admin':   {pass:'Razyel01',   role:'admin',   label:'Admin'},
+  'planner': {pass:'Planner123', role:'planner', label:'Planner'},
+  'agazq':   {pass:'Agazq123',   role:'agazq',   label:'Agazq'}
+};
+
+// ── Extended user config (permissions, tabs, extra users) ────
 const DEFAULT_USERS={
   'admin':  {pass:'Razyel01',   role:'admin',   label:'Admin',   canEdit:true,  canImport:true,  canDelete:true,  canConfig:true,  tabs:['planificacion','gantt','historico','config']},
   'planner':{pass:'Planner123', role:'planner', label:'Planner', canEdit:true,  canImport:true,  canDelete:true,  canConfig:false, tabs:['planificacion','gantt','historico']},
-  'agazq':  {pass:'Agazq123',   role:'agazq',   label:'Agazq',   canEdit:false, canImport:false, canDelete:false, canConfig:false, tabs:['planificacion','gantt'],
-             editFields:['fFab','qtyConf','ubicacion','notes']}
+  'agazq':  {pass:'Agazq123',   role:'agazq',   label:'Agazq',   canEdit:false, canImport:false, canDelete:false, canConfig:false, tabs:['planificacion','gantt'], editFields:['fFab','qtyConf','ubicacion','notes']}
 };
-// Load from localStorage or use defaults
-let _storedUsers=null;
-try{ _storedUsers=JSON.parse(localStorage.getItem('ag_users')||'null'); }catch(e){}
-let USERS_BY_NAME=_storedUsers||JSON.parse(JSON.stringify(DEFAULT_USERS));
-// Always ensure admin exists with correct password
-if(!USERS_BY_NAME['admin']){
-  USERS_BY_NAME['admin']=JSON.parse(JSON.stringify(DEFAULT_USERS['admin']));
-}
+
+let USERS_BY_NAME=JSON.parse(JSON.stringify(DEFAULT_USERS));
+// Merge any extra users from localStorage (but never override master passwords)
+try{
+  const stored=JSON.parse(localStorage.getItem('ag_users')||'null');
+  if(stored && typeof stored==='object'){
+    Object.entries(stored).forEach(([k,v])=>{
+      if(MASTER_USERS[k]){
+        // For master users: keep master password, merge rest
+        USERS_BY_NAME[k]={...v, pass:MASTER_USERS[k].pass};
+      } else {
+        // Extra users: use as-is
+        USERS_BY_NAME[k]=v;
+      }
+    });
+  }
+}catch(e){ console.warn('Could not load stored users:', e); }
+
 function saveUsers(){
-  // Never remove admin
-  if(!USERS_BY_NAME['admin']) USERS_BY_NAME['admin']=JSON.parse(JSON.stringify(DEFAULT_USERS['admin']));
   localStorage.setItem('ag_users',JSON.stringify(USERS_BY_NAME));
+}
+
+function resetUsers(){
+  localStorage.removeItem('ag_users');
+  USERS_BY_NAME=JSON.parse(JSON.stringify(DEFAULT_USERS));
+  saveUsers();
+  alert('Usuarios restablecidos. Contraseñas originales restauradas.');
 }
 
 let currentUser=JSON.parse(sessionStorage.getItem('ag_user')||'null');
 
 function doLogin(){
-  const u=document.getElementById('loginUser').value.trim().toLowerCase();
-  const p=document.getElementById('loginPass').value;
+  const u=(document.getElementById('loginUser').value||'').trim().toLowerCase();
+  const p=(document.getElementById('loginPass').value||'');
   const errEl=document.getElementById('loginErr');
-  const btn=document.querySelector('.btn-login');
 
-  // Validate locally — fast, no network needed
-  const found=USERS_BY_NAME[u];
-  if(!found || found.pass !== p){
-    errEl.textContent='Usuario o contraseña incorrectos.';
-    btn.textContent='Entrar';btn.disabled=false;
+  // Check master passwords first (always work)
+  const master=MASTER_USERS[u];
+  const extended=USERS_BY_NAME[u];
+  const found=extended||master;
+
+  if(!found){
+    errEl.textContent='Usuario "'+u+'" no encontrado. Usuarios válidos: admin, planner, agazq';
     return;
   }
 
-  currentUser={username:u, role:found.role, label:found.label||u};
+  // Password check — use master password for master users
+  const correctPass = master ? master.pass : found.pass;
+  if(p !== correctPass){
+    errEl.textContent='Contraseña incorrecta para "'+u+'".';
+    return;
+  }
+
+  // Login OK
+  currentUser={username:u, role:found.role||'custom', label:found.label||u};
   sessionStorage.setItem('ag_user',JSON.stringify(currentUser));
   document.getElementById('loginWrap').style.display='none';
   document.getElementById('appWrap').style.display='block';
-  document.getElementById('userLabel').textContent=found.label||u;
+  document.getElementById('userLabel').textContent=currentUser.label;
   errEl.textContent='';
   applyRoleUI();
   loadData();
