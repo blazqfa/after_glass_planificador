@@ -299,7 +299,8 @@ tbody td{padding:4px 5px;vertical-align:middle;color:#555;
         <button id="mCSV" onclick="closeDD();exportCSV()">↓ Descargar CSV</button>
         <button id="mArch" onclick="closeDD();archiveAll()">📦 Archivar todo</button>
         <hr>
-        <button onclick="closeDD();syncNow()">⟳ Sincronizar ahora</button>
+        <button onclick="closeDD();syncNow()">⟳ Recargar datos</button>
+        <button onclick="closeDD();testSave()" style="color:#3a9a60;font-weight:600">💾 Guardar en Sheets ahora</button>
         <button onclick="closeDD();clearFilters()">✕ Limpiar filtros</button>
         <button id="mCfg" onclick="closeDD();goTab('cfg')">⚙ Configuración</button>
         <hr>
@@ -674,16 +675,25 @@ async function loadAll(){
 }
 
 async function savePlan(){
-  if(saving) return;
-  if(rows.length===0&&!window._allowEmpty) return;
-  saving=true;
+  if(rows.length===0 && !window._allowEmpty){
+    console.log('savePlan skipped: rows empty');
+    return;
+  }
+  // Pause auto-sync while saving
+  const wasSyncing = syncOK;
+  syncOK = false;
   try{
-    await apiCall({action:'savePlan',rows:JSON.stringify(rows)});
-    syncOK=true;
+    console.log('savePlan: sending',rows.length,'rows...');
+    const result = await apiCall({action:'savePlan',rows:JSON.stringify(rows)});
+    console.log('savePlan: success',result);
+    syncOK = true;
+    return result;
   }catch(e){
-    toast('⚠ Error guardando: '+e.message,true); syncOK=false;
+    console.error('savePlan error:',e);
+    toast('⚠ Error guardando: '+e.message,true);
+    syncOK = wasSyncing;
     throw e;
-  }finally{ saving=false; }
+  }
 }
 
 async function syncNow(){
@@ -691,18 +701,53 @@ async function syncNow(){
   await loadAll();
 }
 
-// Auto-sync every 60s (read-only, safe)
+// Test save - call this to manually verify data is in Sheets
+async function testSave(){
+  if(rows.length === 0){ toast('No hay datos para guardar.',true); return; }
+  toast('⏳ Guardando '+rows.length+' líneas en Sheets...');
+  try{
+    await savePlan();
+    toast('✅ Guardado OK — '+rows.length+' líneas en Google Sheets.');
+  }catch(e){
+    toast('❌ Error: '+e.message,true);
+  }
+}
+
+// Backup save every 2 minutes - ensures data is always in Sheets
+let _lastBackup = 0;
 setInterval(async()=>{
-  if(saving||!cu||!syncOK) return;
+  if(!cu || !syncOK) return;
+  if(rows.length === 0) return;
+  const now = Date.now();
+  if(now - _lastBackup < 120000) return;
+  _lastBackup = now;
+  try{
+    await savePlan();
+    console.log('Backup save OK:',rows.length,'rows');
+  }catch(e){ console.warn('Backup save failed:',e); }
+}, 120000);
+
+// Auto-sync every 60s (read-only)
+// syncOK=false means a save is in progress - skip sync
+setInterval(async()=>{
+  if(!cu || !syncOK) return;
   if(document.getElementById('appWrap').style.display==='none') return;
   try{
-    const plan=await apiCall({action:'getPlan'});
-    if(!Array.isArray(plan)||plan.length===0&&rows.length>0) return;
-    norm(plan); rows=plan;
-    uid=rows.length?Math.max(...rows.map(r=>r.id))+1:1;
-    renderTable(); updateStats();
-  }catch(e){}
-},60000);
+    const plan = await apiCall({action:'getPlan'});
+    if(!Array.isArray(plan)) return;
+    // CRITICAL: never overwrite non-empty local with empty Sheet
+    if(plan.length === 0 && rows.length > 0){
+      console.log('Sync skipped: Sheet empty but local has',rows.length,'rows');
+      return;
+    }
+    if(plan.length === 0) return; // nothing to sync
+    norm(plan);
+    rows = plan;
+    uid = rows.length ? Math.max(...rows.map(r=>r.id))+1 : 1;
+    renderTable();
+    updateStats();
+  }catch(e){ console.warn('sync error',e); }
+}, 60000);
 
 // ═══════════════════════════════════════════════
 // COLUMNS
@@ -979,7 +1024,7 @@ async function importFile(e){
   const f=e.target.files[0]; if(!f) return;
   const reader=new FileReader();
   reader.onload=async ev=>{
-    saving=true; // block auto-sync during import
+    // Note: do NOT set saving=true here - savePlan checks this flag
     const wb=XLSX.read(ev.target.result,{type:'binary',cellDates:true});
     const ws=wb.Sheets[wb.SheetNames[0]];
     const data=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,dateNF:'yyyy-mm-dd'});
@@ -1011,16 +1056,17 @@ async function importFile(e){
     }
     renderTable(); updateStats(); e.target.value='';
     if(pDups.length>0) openDupModal(added);
-    showLoad('Guardando '+rows.length+' líneas en Google Sheets...');
-    try{
-      await savePlan();
-      hideLoad();
-      toast('✅ '+added+' línea(s) importadas y guardadas.');
-    }catch(err){
-      hideLoad();
-      toast('⚠ Error guardando: '+err.message,true);
+    if(rows.length > 0){
+      showLoad('Guardando '+rows.length+' líneas en Google Sheets...');
+      try{
+        await savePlan();
+        hideLoad();
+        toast('✅ '+added+' línea(s) importadas y guardadas en Sheets.');
+      }catch(err2){
+        hideLoad();
+        toast('⚠ Error al guardar en Sheets: '+err2.message,true);
+      }
     }
-    saving=false;
   };
   reader.readAsBinaryString(f);
 }
