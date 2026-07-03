@@ -599,7 +599,7 @@ function canDo(a){
 function canSeeTab(t){
   if(!cu) return false;
   if(cu.role==='admin') return true;
-  if(cu.role==='planner') return ['plan','gantt','hist'].includes(t);
+  if(cu.role==='planner') return true; // Planner sees everything Admin sees
   if(cu.role==='agazq') return ['plan','gantt'].includes(t);
   const usr=users[cu.u];
   return usr && (usr.tabs||[]).includes(t);
@@ -680,10 +680,19 @@ function norm(arr){
 async function loadAll(){
   showLoad('Cargando datos de Google Sheets...');
   try{
-    const [plan,h]=await Promise.all([apiCall({action:'getPlan'}),apiCall({action:'getHist'})]);
+    const [plan,h,savedLists]=await Promise.all([
+      apiCall({action:'getPlan'}),
+      apiCall({action:'getHist'}),
+      apiCall({action:'getLists'})
+    ]);
     rows=norm(plan); hist=Array.isArray(h)?h:[];
     hist.forEach(r=>r.id=Number(r.id)||0);
     uid=rows.length?Math.max(...rows.map(r=>r.id))+1:1;
+    // Load lists from Sheets — overrides localStorage
+    if(savedLists && typeof savedLists==='object' && Object.keys(savedLists).length>0){
+      lists=savedLists;
+      localStorage.setItem('ag_lists',JSON.stringify(lists));
+    }
     renderTable(); updateStats(); hideLoad();
     toast('✅ '+rows.length+' líneas cargadas');
   }catch(e){
@@ -1225,7 +1234,11 @@ function cfgTab(t){
   document.getElementById('cfgUsuarios').classList.toggle('active',t==='usuarios');
   if(t==='usuarios') renderUsers();
 }
-function saveLists(){ localStorage.setItem('ag_lists',JSON.stringify(lists)); }
+function saveLists(){
+  localStorage.setItem('ag_lists',JSON.stringify(lists));
+  // Also save to Sheets so all users see the same lists
+  apiCall({action:'saveLists',lists:JSON.stringify(lists)}).catch(e=>console.warn('saveLists API error:',e));
+}
 function renderCfg(){
   const g=document.getElementById('cfgListasGrid');
   g.innerHTML=Object.keys(LIST_LABELS).map(k=>`
