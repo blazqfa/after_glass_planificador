@@ -472,7 +472,9 @@ let gOffset = 0;
 let sortField = null, sortDir = 1;
 let filters = {};
 let saving = false;
-let syncOK = true; // only sync if last save succeeded
+let syncOK = true;
+let _pendingSaves = 0;  // count of in-flight saves
+let _lastEdit = 0;      // timestamp of last edit - block sync for 30s after edit
 
 let lists = {};
 try { lists = JSON.parse(localStorage.getItem('ag_lists') || 'null') || JSON.parse(JSON.stringify(DEF_LISTS)); }
@@ -708,23 +710,25 @@ async function loadAll(){
 
 async function savePlan(){
   if(rows.length===0 && !window._allowEmpty){
-    console.log('savePlan skipped: rows empty');
     return;
   }
-  // Pause auto-sync while saving
-  const wasSyncing = syncOK;
+  _pendingSaves++;
   syncOK = false;
+  // Snapshot rows at this moment to avoid race conditions
+  const snapshot = JSON.parse(JSON.stringify(rows));
   try{
-    console.log('savePlan: sending',rows.length,'rows...');
-    const result = await apiCall({action:'savePlan',rows:JSON.stringify(rows)});
-    console.log('savePlan: success',result);
-    syncOK = true;
+    const result = await apiCall({action:'savePlan',rows:JSON.stringify(snapshot)});
     return result;
   }catch(e){
-    console.error('savePlan error:',e);
     toast('⚠ Error guardando: '+e.message,true);
-    syncOK = wasSyncing;
     throw e;
+  }finally{
+    _pendingSaves--;
+    if(_pendingSaves <= 0){
+      _pendingSaves = 0;
+      // Only re-enable sync 10s after all saves complete
+      setTimeout(()=>{ syncOK = true; }, 10000);
+    }
   }
 }
 
@@ -745,41 +749,39 @@ async function testSave(){
   }
 }
 
-// Backup save every 2 minutes - ensures data is always in Sheets
+// Backup save every 3 minutes
 let _lastBackup = 0;
 setInterval(async()=>{
-  if(!cu || !syncOK) return;
+  if(!cu) return;
   if(rows.length === 0) return;
   const now = Date.now();
-  if(now - _lastBackup < 120000) return;
+  if(now - _lastBackup < 180000) return;
+  if(_pendingSaves > 0) return; // already saving
   _lastBackup = now;
   try{
     await savePlan();
-    console.log('Backup save OK:',rows.length,'rows');
-  }catch(e){ console.warn('Backup save failed:',e); }
-}, 120000);
+  }catch(e){}
+}, 180000);
 
-// Auto-sync every 60s (read-only)
-// syncOK=false means a save is in progress - skip sync
+// Auto-sync every 90s (read-only)
+// Blocked if saving in progress OR if user edited in last 30s
 setInterval(async()=>{
-  if(!cu || !syncOK) return;
+  if(!cu) return;
+  if(!syncOK) return;
+  if((Date.now() - _lastEdit) < 30000) return; // wait 30s after last edit
   if(document.getElementById('appWrap').style.display==='none') return;
   try{
     const plan = await apiCall({action:'getPlan'});
     if(!Array.isArray(plan)) return;
-    // CRITICAL: never overwrite non-empty local with empty Sheet
-    if(plan.length === 0 && rows.length > 0){
-      console.log('Sync skipped: Sheet empty but local has',rows.length,'rows');
-      return;
-    }
-    if(plan.length === 0) return; // nothing to sync
+    if(plan.length === 0 && rows.length > 0) return;
+    if(plan.length === 0) return;
     norm(plan);
     rows = plan;
     uid = rows.length ? Math.max(...rows.map(r=>r.id))+1 : 1;
     renderTable();
     updateStats();
-  }catch(e){ console.warn('sync error',e); }
-}, 60000);
+  }catch(e){}
+}, 90000);
 
 // ═══════════════════════════════════════════════
 // COLUMNS
@@ -972,12 +974,17 @@ async function sf(id,field,val){
   const r=rows.find(x=>x.id===id);
   if(!r) return;
   r[field]=val;
-  // Re-render for dropdowns and date fields to keep value stable
+  _lastEdit = Date.now(); // mark edit time - blocks sync for 30s
+  syncOK = false;
+  // Re-render dropdowns and dates immediately so value stays visible
   const reRender=['estado','stock','origen','yport','fConf','fIni','fFin','fRec'];
   if(reRender.includes(field)) renderTable();
-  // Save full plan (reliable)
-  try{ await savePlan(); }
-  catch(e){ toast('⚠ Error guardando: '+e.message,true); }
+  // Save to Sheets
+  try{
+    await savePlan();
+  }catch(e){
+    toast('⚠ Error guardando: '+e.message,true);
+  }
 }
 
 function addRow(){
